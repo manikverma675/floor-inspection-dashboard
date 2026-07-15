@@ -70,7 +70,19 @@ def get_data():
     }
 
 
-FULL = get_data()
+try:
+    FULL = get_data()
+except Exception as exc:  # surface a clear, actionable message instead of a redacted trace
+    st.error(
+        "**Couldn't load the inspection data.**\n\n"
+        f"{exc}\n\n"
+        "This app reads its data from a private repository at runtime. If you are "
+        "the owner, check that the **GH_TOKEN** secret is set on Streamlit Cloud "
+        "(a fine-grained token with read-only **Contents** access to the private "
+        "data repo) and reboot the app."
+    )
+    st.stop()
+
 BIN_LABELS = list(dl.BIN_CHECKS.values())
 
 # Full inspection window (bounds for every slider)

@@ -11,10 +11,11 @@ but for bin->zone assignment we ALWAYS use the config workbook.
 
 from __future__ import annotations
 
-import base64
+import json
 import os
-import shutil
-import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from functools import lru_cache
 
@@ -32,8 +33,22 @@ DATA_REPO = os.environ.get("DATA_REPO", "manikverma675/floor-inspection-data")
 _CACHE_DIR = os.path.join(HERE, ".data_cache")
 
 
+def _gh_get(url: str, token: str, accept: str):
+    """Authenticated GET against the GitHub REST API (returns the response object)."""
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": accept,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "floor-inspection-dashboard",
+    })
+    return urllib.request.urlopen(req, timeout=30)
+
+
 def _fetch_private_data(dest: str) -> None:
-    """Clone the private data repo into `dest` using GH_TOKEN (read-only)."""
+    """Download the private data repo's files into `dest` via the GitHub REST API.
+
+    Uses a read-only GH_TOKEN. No git dependency — portable to Streamlit Cloud.
+    """
     token = os.environ.get("GH_TOKEN", "").strip()
     if not token:
         raise RuntimeError(
@@ -41,25 +56,41 @@ def _fetch_private_data(dest: str) -> None:
             "On Streamlit Cloud, add a GH_TOKEN secret (a fine-grained token with "
             "read-only Contents access to the private data repo)."
         )
-    if os.path.exists(dest):
-        shutil.rmtree(dest, ignore_errors=True)
-    # HTTP Basic auth via an extra header (works for classic PATs, fine-grained
-    # PATs and OAuth tokens). Kept out of the URL so it is never written to
-    # .git/config, and never surfaced in error text.
-    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    cmd = [
-        "git", "-c", f"http.extraheader=Authorization: Basic {basic}",
-        "clone", "--depth", "1",
-        f"https://github.com/{DATA_REPO}.git", dest,
-    ]
+    ref = os.environ.get("DATA_REF", "main")
+    base = f"https://api.github.com/repos/{DATA_REPO}/contents"
+
+    def _explain(code: int) -> str:
+        return {
+            401: "the GH_TOKEN is invalid or expired",
+            403: "the GH_TOKEN lacks permission (needs read-only Contents access)",
+            404: f"'{DATA_REPO}' was not found or the token has no access to it",
+        }.get(code, f"HTTP {code}")
+
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
+        with _gh_get(f"{base}?ref={ref}", token, "application/vnd.github+json") as r:
+            entries = json.load(r)
+    except urllib.error.HTTPError as exc:
         raise RuntimeError(
-            f"Failed to fetch private data repo '{DATA_REPO}'. Check that the "
-            "GH_TOKEN secret is valid and has read access. "
-            f"(git exit {exc.returncode})"
+            f"Could not list the private data repo '{DATA_REPO}': {_explain(exc.code)}."
         ) from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error reaching GitHub: {exc.reason}") from None
+
+    os.makedirs(dest, exist_ok=True)
+    for ent in entries:
+        if ent.get("type") != "file" or ent["name"].lower() == "readme.md":
+            continue
+        raw_url = f"{base}/{urllib.parse.quote(ent['path'])}?ref={ref}"
+        try:
+            with _gh_get(raw_url, token, "application/vnd.github.raw") as r:
+                content = r.read()
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"Failed to download '{ent['name']}' from '{DATA_REPO}': "
+                f"{_explain(exc.code)}."
+            ) from None
+        with open(os.path.join(dest, ent["name"]), "wb") as fh:
+            fh.write(content)
 
 
 @lru_cache(maxsize=1)
