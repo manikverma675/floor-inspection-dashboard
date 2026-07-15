@@ -186,6 +186,11 @@ def _empty_note(rng):
             "Widen this chart's date range.")
 
 
+def fx(text: str):
+    """Render the underlying formula/derivation for a chart or table."""
+    st.caption(f"**Formula:** {text}")
+
+
 # --------------------------------------------------------------------------- #
 # Page: Overview
 # --------------------------------------------------------------------------- #
@@ -202,16 +207,24 @@ def page_overview():
     safety = clip(FULL["safety"], rng)
 
     c = st.columns(4)
-    c[0].metric("Inspection reports", reps["fi_reportid"].nunique())
-    c[1].metric("Zones covered", reps["zone"].nunique())
-    c[2].metric("Bins inspected", f"{len(bins):,}")
+    c[0].metric("Inspection reports", reps["fi_reportid"].nunique(),
+                help="Formula: COUNT(distinct fi_reportid) — number of distinct inspection reports in range.")
+    c[1].metric("Zones covered", reps["zone"].nunique(),
+                help="Formula: COUNT(distinct zone) among the reports in range.")
+    c[2].metric("Bins inspected", f"{len(bins):,}",
+                help="Formula: COUNT(bin-inspection rows). A bin inspected on N days counts N times.")
     c[3].metric("Bin pass rate",
-                f"{100*bins['passed_all'].mean():.1f}%" if len(bins) else "—")
+                f"{100*bins['passed_all'].mean():.1f}%" if len(bins) else "—",
+                help="Formula: 100 × (bin inspections passing ALL 4 checks ÷ total bin inspections).")
     c = st.columns(4)
-    c[0].metric("Bin-level defects", len(failed))
-    c[1].metric("Bins with ≥1 fail", int((~bins["passed_all"]).sum()) if len(bins) else 0)
-    c[2].metric("Safety-check fails", int((safety["status"] == "Fail").sum()) if len(safety) else 0)
-    c[3].metric("Reports marked Fail", int((reps["result"] == "Fail").sum()) if len(reps) else 0)
+    c[0].metric("Bin-level defects", len(failed),
+                help="Formula: Σ failed checks across all bin inspections (one bin can add up to 4).")
+    c[1].metric("Bins with ≥1 fail", int((~bins["passed_all"]).sum()) if len(bins) else 0,
+                help="Formula: COUNT(bin inspections where passed_all = False), i.e. ≥1 of the 4 checks failed.")
+    c[2].metric("Safety-check fails", int((safety["status"] == "Fail").sum()) if len(safety) else 0,
+                help="Formula: COUNT(zone-level safety-check records where status = Fail).")
+    c[3].metric("Reports marked Fail", int((reps["result"] == "Fail").sum()) if len(reps) else 0,
+                help="Formula: COUNT(reports where overall inspection result = Fail).")
 
     st.markdown("---")
     left, right = st.columns([3, 2])
@@ -236,6 +249,8 @@ def page_overview():
             fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Failed checks",
                               legend_title="Check", height=430, margin=dict(t=10, b=0))
             st.plotly_chart(fig, width="stretch")
+            fx("bar height = COUNT(Fail rows) grouped by zone; each coloured segment "
+               "= COUNT(Fail) for that zone × check. Zones with 0 defects show an empty bar.")
 
     with right:
         # ---- Defects by check type
@@ -251,6 +266,7 @@ def page_overview():
                           height=250, margin=dict(t=10, b=0))
         fig.update_yaxes(categoryorder="total ascending")
         st.plotly_chart(fig, width="stretch")
+        fx("bar length = COUNT(bin inspections where that check = Fail), across all zones.")
 
         # ---- Report outcomes
         st.subheader("Report outcomes")
@@ -265,6 +281,7 @@ def page_overview():
                          color_discrete_map={"Pass": PASS, "Fail": FAIL, "—": MUTED})
             fig.update_layout(height=250, margin=dict(t=10, b=0))
             st.plotly_chart(fig, width="stretch")
+            fx("slice = COUNT(reports with that overall result) ÷ COUNT(all reports).")
 
     st.markdown("---")
     # ---- Timeline
@@ -281,6 +298,8 @@ def page_overview():
         fig.update_layout(height=320, xaxis_title="", yaxis_title="Defects in report",
                           margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
+        fx("x = report timestamp (from fi_reportid); y & bubble size = COUNT(failed "
+           "checks) in that report. One marker per inspection report.")
 
     st.markdown("---")
     # ---- Pass rate trend by zone (one point per inspection; lines grow over time)
@@ -311,6 +330,8 @@ def page_overview():
                           yaxis_range=[0, 105], legend_title="Zone", height=440,
                           margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
+        fx("each point = 100 × (bins passing all 4 checks ÷ bins inspected) for that "
+           "zone in that inspection (grouped by zone × fi_reportid); x = report timestamp.")
         st.caption("Each marker is one inspection; a line connects a zone's repeat "
                    "inspections over time. With more data these become real trends — "
                    "today most zones have a single inspection (a lone point). Use the "
@@ -337,10 +358,14 @@ def page_overview():
         sub = bins[bins["bin"] == sel_bin]
         sel_fails = fl[fl["bin"] == sel_bin] if not fl.empty else fl
         m = st.columns(4)
-        m[0].metric("Zone", sub["zone"].iloc[0] if not sub.empty else "—")
-        m[1].metric("Times inspected", len(sub))
-        m[2].metric("Inspections with a fail", int((~sub["passed_all"]).sum()))
-        m[3].metric("Total failures", len(sel_fails))
+        m[0].metric("Zone", sub["zone"].iloc[0] if not sub.empty else "—",
+                    help="Formula: the bin's zone from the Zone Config bin→zone mapping.")
+        m[1].metric("Times inspected", len(sub),
+                    help="Formula: COUNT(inspection rows for this bin) in range.")
+        m[2].metric("Inspections with a fail", int((~sub["passed_all"]).sum()),
+                    help="Formula: COUNT(this bin's inspections where ≥1 of the 4 checks failed).")
+        m[3].metric("Total failures", len(sel_fails),
+                    help="Formula: Σ failed checks for this bin across all its inspections.")
         counts = (sel_fails["check"].value_counts().reindex(BIN_LABELS).fillna(0)
                   if not sel_fails.empty else pd.Series(0, index=BIN_LABELS))
         cdf = counts.reset_index(); cdf.columns = ["check", "failures"]
@@ -352,6 +377,8 @@ def page_overview():
         fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Failures",
                           height=360, margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
+        fx("bar = COUNT(times this bin failed that check), summed over all its "
+           "inspections in range.")
         if sel_fails.empty:
             st.caption(f"{sel_bin} passed every check on all {len(sub)} inspection(s).")
 
@@ -369,6 +396,9 @@ def page_overview():
             led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
             st.dataframe(led[["date", "zone", "bin", "check", "inspector notes"]],
                          width="stretch", hide_index=True)
+            fx("one row per (inspection, failed check) for the selected bin; "
+               "'inspector notes' = observed-issues text from the master report "
+               "(fi_observedissues, else fi_additionalcomments), joined on fi_reportid.")
             st.caption("Inspector notes are recorded per inspection (whole-zone), "
                        "so they may describe issues beyond this single bin.")
 
@@ -388,7 +418,9 @@ def page_bin_analysis():
     c = st.columns(4)
     for i, chk in enumerate(BIN_LABELS):
         n = int((fl["check"] == chk).sum()) if len(fl) else 0
-        c[i].metric(chk, n, f"{100*n/total:.1f}% of inspections")
+        c[i].metric(chk, n, f"{100*n/total:.1f}% of inspections",
+                    help=f"Value = COUNT(bin inspections where {chk} = Fail). "
+                         "Delta = 100 × that ÷ total bin inspections in range.")
 
     st.markdown("---")
     st.subheader("Failure rate by zone")
@@ -406,6 +438,8 @@ def page_bin_analysis():
         fig.update_layout(coloraxis_showscale=False, xaxis_title="",
                           yaxis_title="% bins failing", height=340, margin=dict(t=10))
         st.plotly_chart(fig, width="stretch")
+        fx("bar = 100 × (bin inspections in the zone failing ≥1 check ÷ bin "
+           "inspections in the zone). Colour scales with the same rate.")
 
     st.markdown("---")
     st.subheader("Zone × Check heatmap (defect counts)")
@@ -423,6 +457,7 @@ def page_bin_analysis():
                                    texttemplate="%{text}", showscale=True))
         fig.update_layout(height=430, margin=dict(t=10), xaxis_title="", yaxis_title="")
         st.plotly_chart(fig, width="stretch")
+        fx("cell = COUNT(Fail rows) for that zone × check (blank cells = 0 defects).")
 
     # ---- Zone safety checks (select a zone -> stacked status bar + ledger)
     st.markdown("---")
@@ -459,6 +494,9 @@ def page_bin_analysis():
                           legend_title="Status", height=400, margin=dict(t=10),
                           xaxis_tickangle=-15)
         st.plotly_chart(fig, width="stretch")
+        fx("bar height = COUNT(this zone's inspection records) for that required "
+           "check; segments = COUNT by status (Pass/Fail/Recorded/Not recorded). "
+           "Required checks are taken from the Zone Config Y/N matrix.")
         st.caption("Only the checks this zone is required to perform (per Zone Config) "
                    "are shown. 'Not recorded' = required but left blank in that inspection.")
 
@@ -472,6 +510,9 @@ def page_bin_analysis():
         led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
         st.dataframe(led[["date", "zone", "check", "status", "inspector notes"]],
                      width="stretch", hide_index=True)
+        fx("one row per (inspection, required safety check) for the zone; status from "
+           "the check's `*text` field; 'inspector notes' = master report observed-issues "
+           "text joined on fi_reportid.")
         st.caption("Inspector notes are recorded per inspection (whole-zone).")
 
 
@@ -493,7 +534,8 @@ def page_repeat():
         checks=("failed_checks", lambda s: sorted({c for lst in s for c in lst})),
     ).reset_index()
     repeat = agg[agg["times_failed"] > 1].sort_values("times_failed", ascending=False)
-    st.metric("Bins failing more than once", len(repeat))
+    st.metric("Bins failing more than once", len(repeat),
+              help="Formula: COUNT(bins where times_failed > 1), i.e. failed on ≥2 separate inspections.")
     if repeat.empty:
         st.info("No bin failed on more than one inspection in this range.")
         return
@@ -503,6 +545,9 @@ def page_repeat():
     disp = disp.rename(columns={"bin": "Bin", "zone": "Zone", "times_failed": "Times failed"})
     st.dataframe(disp[["Bin", "Zone", "Times failed", "Dates failed", "Failed checks"]],
                  width="stretch", hide_index=True)
+    fx("group bin inspections by bin; 'Times failed' = COUNT(inspections with ≥1 "
+       "failed check); keep bins where that count > 1. 'Failed checks' = the union "
+       "of checks failed across those inspections.")
 
 
 # --------------------------------------------------------------------------- #
@@ -519,9 +564,12 @@ def page_quality():
     else:
         incomplete = comp[comp["completed"] < comp["required"]]
         c = st.columns(3)
-        c[0].metric("Reports analysed", len(comp))
-        c[1].metric("Fully complete", int((comp["completed"] == comp["required"]).sum()))
-        c[2].metric("Missing ≥1 required check", len(incomplete))
+        c[0].metric("Reports analysed", len(comp),
+                    help="Formula: COUNT(reports in range).")
+        c[1].metric("Fully complete", int((comp["completed"] == comp["required"]).sum()),
+                    help="Formula: COUNT(reports where completed = required checks).")
+        c[2].metric("Missing ≥1 required check", len(incomplete),
+                    help="Formula: COUNT(reports where completed < required checks).")
         comp2 = comp.sort_values("date").copy()
         comp2["label"] = comp2["zone"] + " · " + comp2["date"].dt.strftime("%b %d %H:%M")
         fig = go.Figure()
@@ -532,6 +580,8 @@ def page_quality():
         fig.update_layout(barmode="overlay", height=420, xaxis_tickangle=-40,
                           yaxis_title="# checks", margin=dict(t=10))
         st.plotly_chart(fig, width="stretch")
+        fx("per report — Required = COUNT(checks the zone's config marks Y); "
+           "Completed = COUNT(those required checks actually recorded in that report).")
 
     st.markdown("---")
     st.subheader("Required-check status by zone")
@@ -543,6 +593,9 @@ def page_quality():
         _empty_note(rng)
     else:
         st.dataframe(grid, width="stretch")
+        fx("cell rule per zone × check — '–' if the config doesn't require it; else "
+           "Fail if any inspection failed it (Bin Quality: any bin defect in the zone), "
+           "else Pass if recorded pass, else Recorded, else Missing.")
         st.caption("Pass · Fail · Recorded (no explicit pass/fail) · "
                    "Missing (required but not recorded) · – not required")
 
@@ -558,6 +611,8 @@ def page_quality():
         inc["missing_checks"] = inc["missing_checks"].map(", ".join)
         st.dataframe(inc[["zone", "date", "required", "completed", "missing_checks"]],
                      width="stretch", hide_index=True)
+        fx("reports where completed < required; 'missing_checks' = required checks "
+           "(config Y) with no record in that report.")
 
     st.markdown("---")
     st.subheader("Known data-quality notes")
@@ -575,6 +630,8 @@ def page_quality():
     )
     st.subheader("Required-checks matrix (from config — not date-dependent)")
     st.dataframe(FULL["required"], width="stretch", hide_index=True)
+    fx("read directly from the Zone Config workbook (Sheet 1): True = the zone is "
+       "required to perform that check (Y in the source), False = not required.")
 
 
 # --------------------------------------------------------------------------- #
