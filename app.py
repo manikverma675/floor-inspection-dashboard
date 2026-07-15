@@ -260,28 +260,38 @@ def page_overview():
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("---")
-    # ---- Pass rate by zone
-    st.subheader("Bin pass rate by zone")
+    # ---- Pass rate trend by zone (one point per inspection; lines grow over time)
+    st.subheader("Bin pass-rate trend by zone")
     rng = date_range("ov_passrate")
     bins = clip(FULL["bins"], rng)
     if bins.empty:
         _empty_note(rng)
     else:
-        pr = bins.groupby("zone").agg(insp=("bin", "size"),
-                                      passed=("passed_all", "sum")).reset_index()
-        pr["pass_rate"] = 100 * pr["passed"] / pr["insp"]
-        pr["fails"] = pr["insp"] - pr["passed"]
-        pr = pr.sort_values("pass_rate")
-        fig = px.bar(pr, x="pass_rate", y="zone", orientation="h",
-                     text=pr["pass_rate"].map(lambda v: f"{v:.1f}%"),
-                     hover_data={"insp": True, "fails": True, "pass_rate": ":.1f"},
-                     color="pass_rate", range_color=(80, 100),
-                     color_continuous_scale=[FAIL, WARN, PASS])
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_layout(coloraxis_showscale=False, xaxis_title="Pass rate (%)",
-                          yaxis_title="", xaxis_range=[0, 108], height=430,
+        zsel = st.multiselect(
+            "Zones to plot (default: all)",
+            options=sorted(bins["zone"].unique(), key=dl.zone_sort_key),
+            default=[], key="ov_passrate_zones")
+        plot_bins = bins if not zsel else bins[bins["zone"].isin(zsel)]
+        trend = (plot_bins.groupby(["zone", "fi_reportid", "date"])
+                 .agg(insp=("bin", "size"), passed=("passed_all", "sum")).reset_index())
+        trend["pass_rate"] = 100 * trend["passed"] / trend["insp"]
+        trend["fails"] = trend["insp"] - trend["passed"]
+        trend = trend.sort_values("date")
+        fig = px.line(
+            trend, x="date", y="pass_rate", color="zone", markers=True,
+            hover_data={"insp": True, "fails": True, "pass_rate": ":.1f",
+                        "date": False, "zone": False},
+            category_orders={"zone": sorted(trend["zone"].unique(), key=dl.zone_sort_key)},
+            color_discrete_sequence=px.colors.qualitative.Dark24)
+        fig.update_traces(marker=dict(size=8))
+        fig.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
+                          yaxis_range=[0, 105], legend_title="Zone", height=440,
                           margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
+        st.caption("Each marker is one inspection; a line connects a zone's repeat "
+                   "inspections over time. With more data these become real trends — "
+                   "today most zones have a single inspection (a lone point). Use the "
+                   "picker or the legend to isolate zones.")
 
     st.markdown("---")
     # ---- Per-bin failure breakdown
