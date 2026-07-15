@@ -10,12 +10,23 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 import data_loader as dl
+
+# Bridge Streamlit secrets -> env so data_loader can fetch the private data repo.
+# (On Streamlit Cloud secrets live in st.secrets, not the environment.)
+try:
+    for _k in ("GH_TOKEN", "DATA_REPO"):
+        if _k in st.secrets:
+            os.environ[_k] = str(st.secrets[_k])
+except Exception:
+    pass
 
 st.set_page_config(page_title="Floor Inspection — Failure Analytics",
                    layout="wide")

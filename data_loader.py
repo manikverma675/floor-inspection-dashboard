@@ -11,8 +11,10 @@ but for bin->zone assignment we ALWAYS use the config workbook.
 
 from __future__ import annotations
 
-import glob
+import base64
 import os
+import shutil
+import subprocess
 from datetime import datetime
 from functools import lru_cache
 
@@ -20,7 +22,63 @@ import pandas as pd
 import openpyxl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_XLSX = os.path.join(HERE, "Zone Config Table-new (1).xlsx")
+CONFIG_XLSX_NAME = "Zone Config Table-new (1).xlsx"
+
+# Data (the fi_*.csv exports + the Zone Config workbook) lives in a PRIVATE repo
+# and is deliberately not shipped with this public code. Locally the files sit
+# next to this module; on Streamlit Cloud we fetch them at runtime using a
+# read-only token supplied via the GH_TOKEN secret / env var.
+DATA_REPO = os.environ.get("DATA_REPO", "manikverma675/floor-inspection-data")
+_CACHE_DIR = os.path.join(HERE, ".data_cache")
+
+
+def _fetch_private_data(dest: str) -> None:
+    """Clone the private data repo into `dest` using GH_TOKEN (read-only)."""
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "Data files are not present locally and no GH_TOKEN was provided. "
+            "On Streamlit Cloud, add a GH_TOKEN secret (a fine-grained token with "
+            "read-only Contents access to the private data repo)."
+        )
+    if os.path.exists(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    # HTTP Basic auth via an extra header (works for classic PATs, fine-grained
+    # PATs and OAuth tokens). Kept out of the URL so it is never written to
+    # .git/config, and never surfaced in error text.
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    cmd = [
+        "git", "-c", f"http.extraheader=Authorization: Basic {basic}",
+        "clone", "--depth", "1",
+        f"https://github.com/{DATA_REPO}.git", dest,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to fetch private data repo '{DATA_REPO}'. Check that the "
+            "GH_TOKEN secret is valid and has read access. "
+            f"(git exit {exc.returncode})"
+        ) from None
+
+
+@lru_cache(maxsize=1)
+def data_dir() -> str:
+    """Directory holding the data files: local folder in dev, fetched cache on cloud."""
+    if os.path.exists(os.path.join(HERE, CONFIG_XLSX_NAME)):
+        return HERE
+    if not os.path.exists(os.path.join(_CACHE_DIR, CONFIG_XLSX_NAME)):
+        _fetch_private_data(_CACHE_DIR)
+    return _CACHE_DIR
+
+
+def _data_path(name: str) -> str:
+    return os.path.join(data_dir(), name)
+
+
+# Resolved lazily so importing this module never triggers a network fetch.
+def _config_xlsx() -> str:
+    return _data_path(CONFIG_XLSX_NAME)
 
 # The four per-bin quality checks (Dataverse "*text" columns hold Pass/Fail).
 BIN_CHECKS = {
@@ -47,8 +105,7 @@ SAFETY_CHECKS = [
 
 
 def _read_csv(name: str) -> pd.DataFrame:
-    path = os.path.join(HERE, name)
-    return pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
+    return pd.read_csv(_data_path(name), encoding="utf-8-sig", dtype=str).fillna("")
 
 
 def report_id_to_dt(rid: str):
@@ -65,7 +122,7 @@ def report_id_to_dt(rid: str):
 @lru_cache(maxsize=1)
 def load_config():
     """Return (bin_to_zone: dict, zone_to_bins: dict, required: DataFrame)."""
-    wb = openpyxl.load_workbook(CONFIG_XLSX, data_only=True)
+    wb = openpyxl.load_workbook(_config_xlsx(), data_only=True)
 
     # ---- Sheet 2: Zone -> Bin (mixed layout; header + first bin may share a row)
     ws = wb["Sheet2"]
