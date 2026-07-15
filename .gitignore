@@ -1,0 +1,15 @@
+# --- Plant inspection DATA lives in the PRIVATE repo, never here ---
+*.csv
+*.xlsx
+*.xls
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.bak
+*.bak.py
