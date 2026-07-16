@@ -333,21 +333,72 @@ def page_overview():
             options=sorted(bins["zone"].unique(), key=dl.zone_sort_key),
             default=[], key="ov_passrate_zones")
         zoned = bins if not zsel else bins[bins["zone"].isin(zsel)]
-        ALL_BINS = "All bins (zone aggregate)"
-        bin_sel = st.selectbox("Bin", [ALL_BINS] + sorted(zoned["bin"].unique()),
-                               key="ov_passrate_bin")
-        OVERALL = "Overall — passing all four checks"
-        check_sel = st.selectbox("Check", [OVERALL] + BIN_LABELS, key="ov_passrate_check")
+        bin_multi = st.multiselect("Bins (default: all bins)",
+                                   options=sorted(zoned["bin"].unique()),
+                                   default=[], key="ov_passrate_bin")
+        check_multi = st.multiselect("Checks (default: all four)",
+                                     options=BIN_LABELS, default=[],
+                                     key="ov_passrate_check")
+        sel_checks = check_multi if check_multi else BIN_LABELS
+        label = ("passing all four checks" if len(sel_checks) == 4
+                 else "passing " + ", ".join(sel_checks))
+        check_word = ("all four checks" if len(sel_checks) == 4
+                      else ", ".join(sel_checks))
 
         def _pass_col(df):
-            return df["passed_all"] if check_sel == OVERALL else (df[check_sel] == "Pass")
-        label = ("passing all four checks" if check_sel == OVERALL
-                 else f"passing {check_sel}")
-        check_word = "all four checks" if check_sel == OVERALL else f"'{check_sel}'"
+            return df[sel_checks].eq("Pass").all(axis=1)
 
-        if bin_sel == ALL_BINS:
+        work = zoned if not bin_multi else zoned[zoned["bin"].isin(bin_multi)]
+
+        if len(bin_multi) == 1:
+            # -------- Single-bin drill-down (two views of the same data) --------
+            bin_one = bin_multi[0]
+            one = work.copy()
+            one["_pass"] = _pass_col(one)
+            one = one.sort_values("date")
+            zlabel = one["zone"].iloc[0] if len(one) else "—"
+            st.caption(f"Bin **{bin_one}** ({zlabel}) — {label}. "
+                       "Two views of the same data:")
+
+            # View 1 — per inspection (pass = 100, fail = 0), stepped
+            st.markdown("**1. Per inspection — passed / failed each time (shows WHEN it failed)**")
+            v1 = one.copy()
+            v1["result"] = v1["_pass"].map({True: 100, False: 0})
+            v1["outcome"] = v1["_pass"].map({True: "Pass", False: "Fail"})
+            fig1 = px.line(v1, x="date", y="result", markers=True,
+                           hover_data={"outcome": True, "result": False, "date": False})
+            fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
+            fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
+            fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
+                               margin=dict(t=10, b=0))
+            st.plotly_chart(fig1, width="stretch")
+            fx(f"one marker per inspection of {bin_one}: 100 = it passed {check_word} that "
+               "day, 0 = it failed. The step line shows exactly which inspections failed.")
+
+            # View 2 — monthly pass rate (%)
+            st.markdown("**2. Monthly pass rate — how often it passed per month (shows the TREND)**")
+            v2 = one.copy()
+            v2["month"] = v2["date"].dt.to_period("M").dt.to_timestamp()
+            mg = (v2.groupby("month").agg(passed=("_pass", "sum"),
+                                          insp=("_pass", "size")).reset_index())
+            mg["pass_rate"] = 100 * mg["passed"] / mg["insp"]
+            fig2 = px.line(mg, x="month", y="pass_rate", markers=True,
+                           hover_data={"passed": True, "insp": True,
+                                       "pass_rate": ":.1f", "month": False})
+            fig2.update_traces(marker=dict(size=9), line=dict(color=PASS))
+            fig2.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
+                               yaxis_range=[0, 105], height=300, margin=dict(t=10, b=0))
+            st.plotly_chart(fig2, width="stretch")
+            fx(f"each point = 100 × (inspections that month where {bin_one} passed "
+               f"{check_word} ÷ its inspections that month). Smooths into a real % once "
+               "the bin has several inspections in a month.")
+            st.caption("Early on (≤1 inspection per month) both look binary; as "
+                       "inspections accumulate, view 2 becomes a smooth trend while "
+                       "view 1 keeps the exact pass/fail history. Select exactly one bin "
+                       "for this view.")
+        else:
             # -------- Zone-aggregate view (one line per zone) --------
-            plot_bins = zoned.copy()
+            plot_bins = work.copy()
             plot_bins["_pass"] = _pass_col(plot_bins)
             trend = (plot_bins.groupby(["zone", "fi_reportid", "date"])
                      .agg(insp=("bin", "size"), passed=("_pass", "sum")).reset_index())
@@ -365,60 +416,13 @@ def page_overview():
                               yaxis_range=[0, 105], legend_title="Zone", height=440,
                               margin=dict(t=10, b=0))
             st.plotly_chart(fig, width="stretch")
-            if check_sel == OVERALL:
-                fx("each point = a zone's pass rate in one inspection = 100 × (bins that "
-                   f"passed all four checks ({FOUR_CHECKS}) ÷ bins inspected in that report). "
-                   "x = inspection date; a line joins the zone's repeat inspections.")
-            else:
-                fx(f"each point = 100 × (bins that passed the '{check_sel}' check ÷ bins "
-                   "inspected in that report), for that zone. x = inspection date; a line "
-                   "joins the zone's repeat inspections. Choose 'Overall' to require all four.")
+            scope = "" if not bin_multi else f" (limited to {len(bin_multi)} selected bins)"
+            fx(f"each point = a zone's pass rate in one inspection = 100 × (bins {label} "
+               f"÷ bins inspected in that report{scope}). x = inspection date; a line "
+               "joins the zone's repeat inspections.")
             st.caption("One marker per inspection; lines connect a zone's repeat "
-                       "inspections. Pick a specific Bin above to drill into its history.")
-        else:
-            # -------- Single-bin drill-down (two views of the same data) --------
-            one = zoned[zoned["bin"] == bin_sel].copy()
-            one["_pass"] = _pass_col(one)
-            one = one.sort_values("date")
-            zlabel = one["zone"].iloc[0] if len(one) else "—"
-            st.caption(f"Bin **{bin_sel}** ({zlabel}) — {label}. "
-                       "Two views of the same data:")
-
-            # View 1 — per inspection (pass = 100, fail = 0), stepped
-            st.markdown("**1. Per inspection — passed / failed each time (shows WHEN it failed)**")
-            v1 = one.copy()
-            v1["result"] = v1["_pass"].map({True: 100, False: 0})
-            v1["outcome"] = v1["_pass"].map({True: "Pass", False: "Fail"})
-            fig1 = px.line(v1, x="date", y="result", markers=True,
-                           hover_data={"outcome": True, "result": False, "date": False})
-            fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
-            fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
-            fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
-                               margin=dict(t=10, b=0))
-            st.plotly_chart(fig1, width="stretch")
-            fx(f"one marker per inspection of {bin_sel}: 100 = it passed {check_word} that "
-               "day, 0 = it failed. The step line shows exactly which inspections failed.")
-
-            # View 2 — monthly pass rate (%)
-            st.markdown("**2. Monthly pass rate — how often it passed per month (shows the TREND)**")
-            v2 = one.copy()
-            v2["month"] = v2["date"].dt.to_period("M").dt.to_timestamp()
-            mg = (v2.groupby("month").agg(passed=("_pass", "sum"),
-                                          insp=("_pass", "size")).reset_index())
-            mg["pass_rate"] = 100 * mg["passed"] / mg["insp"]
-            fig2 = px.line(mg, x="month", y="pass_rate", markers=True,
-                           hover_data={"passed": True, "insp": True,
-                                       "pass_rate": ":.1f", "month": False})
-            fig2.update_traces(marker=dict(size=9), line=dict(color=PASS))
-            fig2.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
-                               yaxis_range=[0, 105], height=300, margin=dict(t=10, b=0))
-            st.plotly_chart(fig2, width="stretch")
-            fx(f"each point = 100 × (inspections that month where {bin_sel} passed "
-               f"{check_word} ÷ its inspections that month). Smooths into a real % once "
-               "the bin has several inspections in a month.")
-            st.caption("Early on (≤1 inspection per month) both look binary; as "
-                       "inspections accumulate, view 2 becomes a smooth trend while "
-                       "view 1 keeps the exact pass/fail history.")
+                       "inspections. Bins and Checks accept multiple selections — pick "
+                       "exactly one Bin to drill into its pass/fail history.")
 
     st.markdown("---")
     # ---- Per-bin failure breakdown
@@ -631,17 +635,18 @@ def page_bin_analysis():
         zones_avail = sorted(sdf_t["zone"].unique(), key=dl.zone_sort_key)
         zsel = st.multiselect("Zones to plot (default: all)", options=zones_avail,
                               default=[], key="ba_safetytrend_zones")
-        OVERALL_S = "Overall — all required safety checks"
-        chk_s = st.selectbox("Safety check", [OVERALL_S] + dl.SAFETY_CHECKS,
-                             key="ba_safetytrend_check")
+        chk_multi = st.multiselect("Safety checks (default: all required)",
+                                   options=dl.SAFETY_CHECKS, default=[],
+                                   key="ba_safetytrend_check")
         work = sdf_t if not zsel else sdf_t[sdf_t["zone"].isin(zsel)]
-        if chk_s != OVERALL_S:
-            work = work[work["check"] == chk_s]
+        if chk_multi:
+            work = work[work["check"].isin(chk_multi)]
         if work.empty:
             _empty_note(rng)
-        elif chk_s != OVERALL_S and len(zsel) == 1:
+        elif len(zsel) == 1 and len(chk_multi) == 1:
             # -------- Single zone + single safety check: two-view drill --------
             zone_one = zsel[0]
+            chk_s = chk_multi[0]
             s1 = work.sort_values("date").copy()
             s1["_pass"] = s1["status"] == "Pass"
             st.caption(f"Zone **{zone_one}** — '{chk_s}'. Two views of the same data:")
@@ -696,23 +701,20 @@ def page_bin_analysis():
                 category_orders={"zone": zones_avail},
                 color_discrete_sequence=px.colors.qualitative.Dark24)
             fig.update_traces(marker=dict(size=8))
-            ytitle = ("Safety pass rate (%)" if chk_s == OVERALL_S
-                      else f"'{chk_s}' pass rate (%)")
+            ytitle = (f"'{chk_multi[0]}' pass rate (%)" if len(chk_multi) == 1
+                      else "Safety pass rate (%)")
             fig.update_layout(xaxis_title="", yaxis_title=ytitle, yaxis_range=[0, 105],
                               legend_title="Zone", height=440, margin=dict(t=10, b=0))
             st.plotly_chart(fig, width="stretch")
-            if chk_s == OVERALL_S:
-                fx("each point = 100 × (required safety checks marked Pass ÷ required "
-                   "safety checks for that zone) in one inspection. A required check left "
-                   "blank ('Not recorded') counts as not passed. x = inspection date; a "
-                   "line joins the zone's repeat inspections.")
-            else:
-                fx(f"each point = whether '{chk_s}' passed in that inspection (100% = "
-                   "Pass, 0% = Fail or not recorded). This check is recorded once per "
-                   "inspection, so the line steps between 0 and 100 rather than a smooth %.")
-            st.caption("Only zones that require the selected check appear. Select a "
-                       "single zone AND a single safety check to drill into its "
-                       "per-inspection history (as on the bin trend above).")
+            scope = ("all required safety checks" if not chk_multi
+                     else ", ".join(chk_multi))
+            fx(f"each point = 100 × (selected safety checks marked Pass ÷ selected "
+               "safety checks recorded) for that zone in one inspection. A required "
+               f"check left blank counts as not passed. Selected: {scope}. x = "
+               "inspection date; a line joins the zone's repeat inspections.")
+            st.caption("Only zones that require the selected checks appear. Safety "
+                       "checks accept multiple selections — select a single zone AND a "
+                       "single safety check to drill into its per-inspection history.")
 
 
 # --------------------------------------------------------------------------- #
