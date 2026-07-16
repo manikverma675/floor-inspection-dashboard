@@ -639,7 +639,51 @@ def page_bin_analysis():
             work = work[work["check"] == chk_s]
         if work.empty:
             _empty_note(rng)
+        elif chk_s != OVERALL_S and len(zsel) == 1:
+            # -------- Single zone + single safety check: two-view drill --------
+            zone_one = zsel[0]
+            s1 = work.sort_values("date").copy()
+            s1["_pass"] = s1["status"] == "Pass"
+            st.caption(f"Zone **{zone_one}** — '{chk_s}'. Two views of the same data:")
+
+            # View 1 — per inspection (pass = 100, fail/not-recorded = 0), stepped
+            st.markdown("**1. Per inspection — passed / failed each time (shows WHEN it failed)**")
+            v1 = s1.copy()
+            v1["result"] = v1["_pass"].map({True: 100, False: 0})
+            fig1 = px.line(v1, x="date", y="result", markers=True,
+                           hover_data={"status": True, "result": False, "date": False})
+            fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
+            fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
+            fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
+                               margin=dict(t=10, b=0))
+            st.plotly_chart(fig1, width="stretch")
+            fx(f"one marker per inspection of {zone_one}: 100 = '{chk_s}' passed that "
+               "inspection, 0 = it failed or was not recorded. The step line shows "
+               "exactly which inspections failed.")
+
+            # View 2 — monthly pass rate (%)
+            st.markdown("**2. Monthly pass rate — how often it passed per month (shows the TREND)**")
+            v2 = s1.copy()
+            v2["month"] = v2["date"].dt.to_period("M").dt.to_timestamp()
+            mg = (v2.groupby("month").agg(passed=("_pass", "sum"),
+                                          insp=("_pass", "size")).reset_index())
+            mg["pass_rate"] = 100 * mg["passed"] / mg["insp"]
+            fig2 = px.line(mg, x="month", y="pass_rate", markers=True,
+                           hover_data={"passed": True, "insp": True,
+                                       "pass_rate": ":.1f", "month": False})
+            fig2.update_traces(marker=dict(size=9), line=dict(color=PASS))
+            fig2.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
+                               yaxis_range=[0, 105], height=300, margin=dict(t=10, b=0))
+            st.plotly_chart(fig2, width="stretch")
+            fx(f"each point = 100 × (inspections that month where '{chk_s}' passed ÷ "
+               f"{zone_one}'s inspections that month). Smooths into a real % once the "
+               "zone has several inspections in a month.")
+            st.caption("Early on (≤1 inspection per month) both look binary; as "
+                       "inspections accumulate, view 2 becomes a smooth trend while view 1 "
+                       "keeps the exact pass/fail history. Pick multiple zones or 'Overall' "
+                       "for the comparison line instead.")
         else:
+            # -------- Comparison view: one line per zone --------
             grp = (work.groupby(["zone", "fi_reportid", "date"])
                    .agg(passed=("status", lambda s: int((s == "Pass").sum())),
                         required=("status", "size")).reset_index())
@@ -666,10 +710,9 @@ def page_bin_analysis():
                 fx(f"each point = whether '{chk_s}' passed in that inspection (100% = "
                    "Pass, 0% = Fail or not recorded). This check is recorded once per "
                    "inspection, so the line steps between 0 and 100 rather than a smooth %.")
-            st.caption("Only zones that require the selected check appear. Today most "
-                       "zones have one inspection (a lone point); trends emerge as more "
-                       "inspections accumulate. Use the zone picker and the Check dropdown "
-                       "to isolate a zone or a single safety check.")
+            st.caption("Only zones that require the selected check appear. Select a "
+                       "single zone AND a single safety check to drill into its "
+                       "per-inspection history (as on the bin trend above).")
 
 
 # --------------------------------------------------------------------------- #
