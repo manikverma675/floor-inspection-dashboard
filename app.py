@@ -333,9 +333,14 @@ def page_overview():
             options=sorted(bins["zone"].unique(), key=dl.zone_sort_key),
             default=[], key="ov_passrate_zones")
         zoned = bins if not zsel else bins[bins["zone"].isin(zsel)]
-        bin_multi = st.multiselect("Bins (default: all bins)",
-                                   options=sorted(zoned["bin"].unique()),
-                                   default=[], key="ov_passrate_bin")
+        # group the bin list by zone so it's clear which bin sits in which zone
+        bin_to_zone = FULL["bin_to_zone"]
+        bin_opts = sorted(zoned["bin"].unique(),
+                          key=lambda b: (dl.zone_sort_key(bin_to_zone.get(b, "")), b))
+        bin_multi = st.multiselect(
+            "Bins (default: all bins) — grouped by zone",
+            options=bin_opts, default=[], key="ov_passrate_bin",
+            format_func=lambda b: f"{bin_to_zone.get(b, '?')} — {b}")
         check_multi = st.multiselect("Checks (default: all four)",
                                      options=BIN_LABELS, default=[],
                                      key="ov_passrate_check")
