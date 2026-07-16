@@ -321,8 +321,8 @@ def page_overview():
            f"bin checks ({FOUR_CHECKS}) found in that report. Colour = zone.")
 
     st.markdown("---")
-    # ---- Pass rate trend by zone (one point per inspection; lines grow over time)
-    st.subheader(f"Bin pass-rate trend by zone ({', '.join(BIN_LABELS)})")
+    # ---- Pass rate trend by zone, filterable to a single check
+    st.subheader("Bin pass-rate trend by zone")
     rng = date_range("ov_passrate")
     bins = clip(FULL["bins"], rng)
     if bins.empty:
@@ -332,9 +332,17 @@ def page_overview():
             "Zones to plot (default: all)",
             options=sorted(bins["zone"].unique(), key=dl.zone_sort_key),
             default=[], key="ov_passrate_zones")
-        plot_bins = bins if not zsel else bins[bins["zone"].isin(zsel)]
+        OVERALL = "Overall — passing all four checks"
+        check_sel = st.selectbox("Check", [OVERALL] + BIN_LABELS, key="ov_passrate_check")
+        plot_bins = (bins if not zsel else bins[bins["zone"].isin(zsel)]).copy()
+        if check_sel == OVERALL:
+            plot_bins["_pass"] = plot_bins["passed_all"]
+            label = "passing all four checks"
+        else:
+            plot_bins["_pass"] = plot_bins[check_sel] == "Pass"
+            label = f"passing {check_sel}"
         trend = (plot_bins.groupby(["zone", "fi_reportid", "date"])
-                 .agg(insp=("bin", "size"), passed=("passed_all", "sum")).reset_index())
+                 .agg(insp=("bin", "size"), passed=("_pass", "sum")).reset_index())
         trend["pass_rate"] = 100 * trend["passed"] / trend["insp"]
         trend["fails"] = trend["insp"] - trend["passed"]
         trend = trend.sort_values("date")
@@ -345,17 +353,21 @@ def page_overview():
             category_orders={"zone": sorted(trend["zone"].unique(), key=dl.zone_sort_key)},
             color_discrete_sequence=px.colors.qualitative.Dark24)
         fig.update_traces(marker=dict(size=8))
-        fig.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
+        fig.update_layout(xaxis_title="", yaxis_title=f"% bins {label}",
                           yaxis_range=[0, 105], legend_title="Zone", height=440,
                           margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
-        fx("each point = a zone's pass rate in one inspection = 100 × (bins that passed "
-           f"all four checks ({FOUR_CHECKS}) ÷ bins inspected in that report). x = when "
-           "the inspection happened; a line joins the same zone's repeat inspections.")
-        st.caption("Each marker is one inspection; a line connects a zone's repeat "
-                   "inspections over time. With more data these become real trends — "
-                   "today most zones have a single inspection (a lone point). Use the "
-                   "picker or the legend to isolate zones.")
+        if check_sel == OVERALL:
+            fx("each point = a zone's pass rate in one inspection = 100 × (bins that "
+               f"passed all four checks ({FOUR_CHECKS}) ÷ bins inspected in that report). "
+               "x = inspection date; a line joins the zone's repeat inspections.")
+        else:
+            fx(f"each point = 100 × (bins that passed the '{check_sel}' check ÷ bins "
+               "inspected in that report), for that zone. x = inspection date; a line "
+               "joins the zone's repeat inspections. Choose 'Overall' to require all four.")
+        st.caption("One marker per inspection; lines connect a zone's repeat inspections. "
+                   "Use the zone picker/legend and the Check dropdown to isolate a zone "
+                   "or a single failure type. Trends fill in as inspections accumulate.")
 
     st.markdown("---")
     # ---- Per-bin failure breakdown
@@ -565,33 +577,48 @@ def page_bin_analysis():
     if sdf_t.empty:
         _empty_note(rng)
     else:
-        grp = (sdf_t.groupby(["zone", "fi_reportid", "date"])
-               .agg(passed=("status", lambda s: int((s == "Pass").sum())),
-                    required=("status", "size")).reset_index())
-        grp["pass_rate"] = 100 * grp["passed"] / grp["required"]
-        grp = grp.sort_values("date")
-        zones_avail = sorted(grp["zone"].unique(), key=dl.zone_sort_key)
+        zones_avail = sorted(sdf_t["zone"].unique(), key=dl.zone_sort_key)
         zsel = st.multiselect("Zones to plot (default: all)", options=zones_avail,
                               default=[], key="ba_safetytrend_zones")
-        plot = grp if not zsel else grp[grp["zone"].isin(zsel)]
-        fig = px.line(
-            plot, x="date", y="pass_rate", color="zone", markers=True,
-            hover_data={"passed": True, "required": True, "pass_rate": ":.1f",
-                        "date": False, "zone": False},
-            category_orders={"zone": zones_avail},
-            color_discrete_sequence=px.colors.qualitative.Dark24)
-        fig.update_traces(marker=dict(size=8))
-        fig.update_layout(xaxis_title="", yaxis_title="Safety pass rate (%)",
-                          yaxis_range=[0, 105], legend_title="Zone", height=440,
-                          margin=dict(t=10, b=0))
-        st.plotly_chart(fig, width="stretch")
-        fx("each point = a zone's safety pass rate in one inspection = 100 × (required "
-           "safety checks marked Pass ÷ required safety checks for that zone). x = when "
-           "the inspection happened; a line joins the same zone's repeat inspections. A "
-           "required check left blank ('Not recorded') counts as not passed.")
-        st.caption("Zones with no required safety checks (bin-quality only) don't "
-                   "appear. Today most zones have a single inspection (a lone point); "
-                   "trends emerge as more inspections accumulate.")
+        OVERALL_S = "Overall — all required safety checks"
+        chk_s = st.selectbox("Safety check", [OVERALL_S] + dl.SAFETY_CHECKS,
+                             key="ba_safetytrend_check")
+        work = sdf_t if not zsel else sdf_t[sdf_t["zone"].isin(zsel)]
+        if chk_s != OVERALL_S:
+            work = work[work["check"] == chk_s]
+        if work.empty:
+            _empty_note(rng)
+        else:
+            grp = (work.groupby(["zone", "fi_reportid", "date"])
+                   .agg(passed=("status", lambda s: int((s == "Pass").sum())),
+                        required=("status", "size")).reset_index())
+            grp["pass_rate"] = 100 * grp["passed"] / grp["required"]
+            grp = grp.sort_values("date")
+            fig = px.line(
+                grp, x="date", y="pass_rate", color="zone", markers=True,
+                hover_data={"passed": True, "required": True, "pass_rate": ":.1f",
+                            "date": False, "zone": False},
+                category_orders={"zone": zones_avail},
+                color_discrete_sequence=px.colors.qualitative.Dark24)
+            fig.update_traces(marker=dict(size=8))
+            ytitle = ("Safety pass rate (%)" if chk_s == OVERALL_S
+                      else f"'{chk_s}' pass rate (%)")
+            fig.update_layout(xaxis_title="", yaxis_title=ytitle, yaxis_range=[0, 105],
+                              legend_title="Zone", height=440, margin=dict(t=10, b=0))
+            st.plotly_chart(fig, width="stretch")
+            if chk_s == OVERALL_S:
+                fx("each point = 100 × (required safety checks marked Pass ÷ required "
+                   "safety checks for that zone) in one inspection. A required check left "
+                   "blank ('Not recorded') counts as not passed. x = inspection date; a "
+                   "line joins the zone's repeat inspections.")
+            else:
+                fx(f"each point = whether '{chk_s}' passed in that inspection (100% = "
+                   "Pass, 0% = Fail or not recorded). This check is recorded once per "
+                   "inspection, so the line steps between 0 and 100 rather than a smooth %.")
+            st.caption("Only zones that require the selected check appear. Today most "
+                       "zones have one inspection (a lone point); trends emerge as more "
+                       "inspections accumulate. Use the zone picker and the Check dropdown "
+                       "to isolate a zone or a single safety check.")
 
 
 # --------------------------------------------------------------------------- #
