@@ -332,42 +332,93 @@ def page_overview():
             "Zones to plot (default: all)",
             options=sorted(bins["zone"].unique(), key=dl.zone_sort_key),
             default=[], key="ov_passrate_zones")
+        zoned = bins if not zsel else bins[bins["zone"].isin(zsel)]
+        ALL_BINS = "All bins (zone aggregate)"
+        bin_sel = st.selectbox("Bin", [ALL_BINS] + sorted(zoned["bin"].unique()),
+                               key="ov_passrate_bin")
         OVERALL = "Overall — passing all four checks"
         check_sel = st.selectbox("Check", [OVERALL] + BIN_LABELS, key="ov_passrate_check")
-        plot_bins = (bins if not zsel else bins[bins["zone"].isin(zsel)]).copy()
-        if check_sel == OVERALL:
-            plot_bins["_pass"] = plot_bins["passed_all"]
-            label = "passing all four checks"
+
+        def _pass_col(df):
+            return df["passed_all"] if check_sel == OVERALL else (df[check_sel] == "Pass")
+        label = ("passing all four checks" if check_sel == OVERALL
+                 else f"passing {check_sel}")
+        check_word = "all four checks" if check_sel == OVERALL else f"'{check_sel}'"
+
+        if bin_sel == ALL_BINS:
+            # -------- Zone-aggregate view (one line per zone) --------
+            plot_bins = zoned.copy()
+            plot_bins["_pass"] = _pass_col(plot_bins)
+            trend = (plot_bins.groupby(["zone", "fi_reportid", "date"])
+                     .agg(insp=("bin", "size"), passed=("_pass", "sum")).reset_index())
+            trend["pass_rate"] = 100 * trend["passed"] / trend["insp"]
+            trend["fails"] = trend["insp"] - trend["passed"]
+            trend = trend.sort_values("date")
+            fig = px.line(
+                trend, x="date", y="pass_rate", color="zone", markers=True,
+                hover_data={"insp": True, "fails": True, "pass_rate": ":.1f",
+                            "date": False, "zone": False},
+                category_orders={"zone": sorted(trend["zone"].unique(), key=dl.zone_sort_key)},
+                color_discrete_sequence=px.colors.qualitative.Dark24)
+            fig.update_traces(marker=dict(size=8))
+            fig.update_layout(xaxis_title="", yaxis_title=f"% bins {label}",
+                              yaxis_range=[0, 105], legend_title="Zone", height=440,
+                              margin=dict(t=10, b=0))
+            st.plotly_chart(fig, width="stretch")
+            if check_sel == OVERALL:
+                fx("each point = a zone's pass rate in one inspection = 100 × (bins that "
+                   f"passed all four checks ({FOUR_CHECKS}) ÷ bins inspected in that report). "
+                   "x = inspection date; a line joins the zone's repeat inspections.")
+            else:
+                fx(f"each point = 100 × (bins that passed the '{check_sel}' check ÷ bins "
+                   "inspected in that report), for that zone. x = inspection date; a line "
+                   "joins the zone's repeat inspections. Choose 'Overall' to require all four.")
+            st.caption("One marker per inspection; lines connect a zone's repeat "
+                       "inspections. Pick a specific Bin above to drill into its history.")
         else:
-            plot_bins["_pass"] = plot_bins[check_sel] == "Pass"
-            label = f"passing {check_sel}"
-        trend = (plot_bins.groupby(["zone", "fi_reportid", "date"])
-                 .agg(insp=("bin", "size"), passed=("_pass", "sum")).reset_index())
-        trend["pass_rate"] = 100 * trend["passed"] / trend["insp"]
-        trend["fails"] = trend["insp"] - trend["passed"]
-        trend = trend.sort_values("date")
-        fig = px.line(
-            trend, x="date", y="pass_rate", color="zone", markers=True,
-            hover_data={"insp": True, "fails": True, "pass_rate": ":.1f",
-                        "date": False, "zone": False},
-            category_orders={"zone": sorted(trend["zone"].unique(), key=dl.zone_sort_key)},
-            color_discrete_sequence=px.colors.qualitative.Dark24)
-        fig.update_traces(marker=dict(size=8))
-        fig.update_layout(xaxis_title="", yaxis_title=f"% bins {label}",
-                          yaxis_range=[0, 105], legend_title="Zone", height=440,
-                          margin=dict(t=10, b=0))
-        st.plotly_chart(fig, width="stretch")
-        if check_sel == OVERALL:
-            fx("each point = a zone's pass rate in one inspection = 100 × (bins that "
-               f"passed all four checks ({FOUR_CHECKS}) ÷ bins inspected in that report). "
-               "x = inspection date; a line joins the zone's repeat inspections.")
-        else:
-            fx(f"each point = 100 × (bins that passed the '{check_sel}' check ÷ bins "
-               "inspected in that report), for that zone. x = inspection date; a line "
-               "joins the zone's repeat inspections. Choose 'Overall' to require all four.")
-        st.caption("One marker per inspection; lines connect a zone's repeat inspections. "
-                   "Use the zone picker/legend and the Check dropdown to isolate a zone "
-                   "or a single failure type. Trends fill in as inspections accumulate.")
+            # -------- Single-bin drill-down (two views of the same data) --------
+            one = zoned[zoned["bin"] == bin_sel].copy()
+            one["_pass"] = _pass_col(one)
+            one = one.sort_values("date")
+            zlabel = one["zone"].iloc[0] if len(one) else "—"
+            st.caption(f"Bin **{bin_sel}** ({zlabel}) — {label}. "
+                       "Two views of the same data:")
+
+            # View 1 — per inspection (pass = 100, fail = 0), stepped
+            st.markdown("**1. Per inspection — passed / failed each time (shows WHEN it failed)**")
+            v1 = one.copy()
+            v1["result"] = v1["_pass"].map({True: 100, False: 0})
+            v1["outcome"] = v1["_pass"].map({True: "Pass", False: "Fail"})
+            fig1 = px.line(v1, x="date", y="result", markers=True,
+                           hover_data={"outcome": True, "result": False, "date": False})
+            fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
+            fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
+            fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
+                               margin=dict(t=10, b=0))
+            st.plotly_chart(fig1, width="stretch")
+            fx(f"one marker per inspection of {bin_sel}: 100 = it passed {check_word} that "
+               "day, 0 = it failed. The step line shows exactly which inspections failed.")
+
+            # View 2 — monthly pass rate (%)
+            st.markdown("**2. Monthly pass rate — how often it passed per month (shows the TREND)**")
+            v2 = one.copy()
+            v2["month"] = v2["date"].dt.to_period("M").dt.to_timestamp()
+            mg = (v2.groupby("month").agg(passed=("_pass", "sum"),
+                                          insp=("_pass", "size")).reset_index())
+            mg["pass_rate"] = 100 * mg["passed"] / mg["insp"]
+            fig2 = px.line(mg, x="month", y="pass_rate", markers=True,
+                           hover_data={"passed": True, "insp": True,
+                                       "pass_rate": ":.1f", "month": False})
+            fig2.update_traces(marker=dict(size=9), line=dict(color=PASS))
+            fig2.update_layout(xaxis_title="", yaxis_title="Pass rate (%)",
+                               yaxis_range=[0, 105], height=300, margin=dict(t=10, b=0))
+            st.plotly_chart(fig2, width="stretch")
+            fx(f"each point = 100 × (inspections that month where {bin_sel} passed "
+               f"{check_word} ÷ its inspections that month). Smooths into a real % once "
+               "the bin has several inspections in a month.")
+            st.caption("Early on (≤1 inspection per month) both look binary; as "
+                       "inspections accumulate, view 2 becomes a smooth trend while "
+                       "view 1 keeps the exact pass/fail history.")
 
     st.markdown("---")
     # ---- Per-bin failure breakdown
