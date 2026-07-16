@@ -322,7 +322,7 @@ def page_overview():
 
     st.markdown("---")
     # ---- Pass rate trend by zone (one point per inspection; lines grow over time)
-    st.subheader("Bin pass-rate trend by zone")
+    st.subheader(f"Bin pass-rate trend by zone ({', '.join(BIN_LABELS)})")
     rng = date_range("ov_passrate")
     bins = clip(FULL["bins"], rng)
     if bins.empty:
