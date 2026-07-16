@@ -546,6 +546,50 @@ def page_bin_analysis():
            "observed-issues field, or comments if blank), matched by report id.")
         st.caption("Inspector notes are recorded per inspection (whole-zone).")
 
+    # ---- Zone safety-check status trend (select a zone -> status over time)
+    st.markdown("---")
+    st.subheader("Zone safety-check status trend")
+    st.caption("Pick a zone to see how each of its required safety checks (Electrical "
+               "Safety, Fire Extinguisher, Emergency Lighting, Dock Security, Moisture "
+               "Control, Eyewash, 5S Board) trends over successive inspections.")
+    zones_t = zone_options(FULL["zone_to_bins"].keys())
+    sel_zone_t = st.selectbox("Zone", zones_t, key="ba_safetytrend_zone")
+    rng = date_range("ba_safetytrend")
+
+    req_t = [c for c in dl.SAFETY_CHECKS
+             if sel_zone_t in required.index and bool(required.loc[sel_zone_t, c])]
+    reps_t = clip(FULL["reports"], rng)
+    safety_t = clip(FULL["safety"], rng)
+    zrep_t = reps_t.loc[reps_t["zone"] == sel_zone_t, "fi_reportid"].tolist() if len(reps_t) else []
+    tdf = (safety_t[(safety_t["fi_reportid"].isin(zrep_t)) & (safety_t["check"].isin(req_t))]
+           if len(safety_t) else safety_t)
+
+    if not req_t:
+        st.info(f"{sel_zone_t} has no zone-level safety checks required in the config "
+                "(it is bin-quality only).")
+    elif tdf.empty:
+        _empty_note(rng)
+    else:
+        status_order = ["Fail", "Not recorded", "Recorded", "Pass"]  # worst -> best
+        t = tdf.sort_values("date").copy()
+        t["check"] = t["check"].map(SHORT_CHECK).fillna(t["check"])
+        fig = px.line(t, x="date", y="status", color="check", markers=True,
+                      category_orders={"status": status_order,
+                                       "check": [SHORT_CHECK.get(c, c) for c in req_t]},
+                      color_discrete_sequence=px.colors.qualitative.Dark24)
+        fig.update_traces(marker=dict(size=9))
+        fig.update_yaxes(categoryorder="array", categoryarray=status_order)
+        fig.update_layout(xaxis_title="", yaxis_title="Status", legend_title="Check",
+                          height=440, margin=dict(t=10, b=0))
+        st.plotly_chart(fig, width="stretch")
+        fx("one line per safety check the zone requires; each marker = that check's "
+           "status in one inspection (Pass / Recorded / Not recorded / Fail), placed at "
+           "the inspection date. A line joins the same check's repeat inspections, so a "
+           "check moving e.g. Fail → Pass shows as a rising step.")
+        st.caption("Status axis (bottom → top): Fail, Not recorded, Recorded, Pass. "
+                   "Today most zones have a single inspection (a lone point per check); "
+                   "trends emerge as more inspections accumulate.")
+
 
 # --------------------------------------------------------------------------- #
 # Page: Repeat offenders
