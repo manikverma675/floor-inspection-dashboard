@@ -546,48 +546,51 @@ def page_bin_analysis():
            "observed-issues field, or comments if blank), matched by report id.")
         st.caption("Inspector notes are recorded per inspection (whole-zone).")
 
-    # ---- Zone safety-check status trend (select a zone -> status over time)
+    # ---- Zone safety-check pass-rate trend (mirrors the bin pass-rate trend)
     st.markdown("---")
-    st.subheader("Zone safety-check status trend")
-    st.caption("Pick a zone to see how each of its required safety checks (Electrical "
-               "Safety, Fire Extinguisher, Emergency Lighting, Dock Security, Moisture "
-               "Control, Eyewash, 5S Board) trends over successive inspections.")
-    zones_t = zone_options(FULL["zone_to_bins"].keys())
-    sel_zone_t = st.selectbox("Zone", zones_t, key="ba_safetytrend_zone")
+    st.subheader("Zone safety-check pass-rate trend")
+    st.caption("Pass rate = % of a zone's required safety checks (Electrical Safety, "
+               "Fire Extinguisher, Emergency Lighting, Dock Security, Moisture Control, "
+               "Eyewash, 5S Board) that passed in each inspection. One line per zone; "
+               "designed to become a real trend as inspections accumulate.")
     rng = date_range("ba_safetytrend")
-
-    req_t = [c for c in dl.SAFETY_CHECKS
-             if sel_zone_t in required.index and bool(required.loc[sel_zone_t, c])]
-    reps_t = clip(FULL["reports"], rng)
     safety_t = clip(FULL["safety"], rng)
-    zrep_t = reps_t.loc[reps_t["zone"] == sel_zone_t, "fi_reportid"].tolist() if len(reps_t) else []
-    tdf = (safety_t[(safety_t["fi_reportid"].isin(zrep_t)) & (safety_t["check"].isin(req_t))]
-           if len(safety_t) else safety_t)
 
-    if not req_t:
-        st.info(f"{sel_zone_t} has no zone-level safety checks required in the config "
-                "(it is bin-quality only).")
-    elif tdf.empty:
+    # keep only rows for checks that the row's own zone is required to perform
+    sdf_t = safety_t[safety_t["check"].isin(dl.SAFETY_CHECKS)].copy() if len(safety_t) else safety_t
+    if len(sdf_t):
+        sdf_t = sdf_t[[(z in required.index and bool(required.loc[z, c]))
+                       for z, c in zip(sdf_t["zone"], sdf_t["check"])]]
+
+    if sdf_t.empty:
         _empty_note(rng)
     else:
-        status_order = ["Fail", "Not recorded", "Recorded", "Pass"]  # worst -> best
-        t = tdf.sort_values("date").copy()
-        t["check"] = t["check"].map(SHORT_CHECK).fillna(t["check"])
-        fig = px.line(t, x="date", y="status", color="check", markers=True,
-                      category_orders={"status": status_order,
-                                       "check": [SHORT_CHECK.get(c, c) for c in req_t]},
-                      color_discrete_sequence=px.colors.qualitative.Dark24)
-        fig.update_traces(marker=dict(size=9))
-        fig.update_yaxes(categoryorder="array", categoryarray=status_order)
-        fig.update_layout(xaxis_title="", yaxis_title="Status", legend_title="Check",
-                          height=440, margin=dict(t=10, b=0))
+        grp = (sdf_t.groupby(["zone", "fi_reportid", "date"])
+               .agg(passed=("status", lambda s: int((s == "Pass").sum())),
+                    required=("status", "size")).reset_index())
+        grp["pass_rate"] = 100 * grp["passed"] / grp["required"]
+        grp = grp.sort_values("date")
+        zones_avail = sorted(grp["zone"].unique(), key=dl.zone_sort_key)
+        zsel = st.multiselect("Zones to plot (default: all)", options=zones_avail,
+                              default=[], key="ba_safetytrend_zones")
+        plot = grp if not zsel else grp[grp["zone"].isin(zsel)]
+        fig = px.line(
+            plot, x="date", y="pass_rate", color="zone", markers=True,
+            hover_data={"passed": True, "required": True, "pass_rate": ":.1f",
+                        "date": False, "zone": False},
+            category_orders={"zone": zones_avail},
+            color_discrete_sequence=px.colors.qualitative.Dark24)
+        fig.update_traces(marker=dict(size=8))
+        fig.update_layout(xaxis_title="", yaxis_title="Safety pass rate (%)",
+                          yaxis_range=[0, 105], legend_title="Zone", height=440,
+                          margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
-        fx("one line per safety check the zone requires; each marker = that check's "
-           "status in one inspection (Pass / Recorded / Not recorded / Fail), placed at "
-           "the inspection date. A line joins the same check's repeat inspections, so a "
-           "check moving e.g. Fail → Pass shows as a rising step.")
-        st.caption("Status axis (bottom → top): Fail, Not recorded, Recorded, Pass. "
-                   "Today most zones have a single inspection (a lone point per check); "
+        fx("each point = a zone's safety pass rate in one inspection = 100 × (required "
+           "safety checks marked Pass ÷ required safety checks for that zone). x = when "
+           "the inspection happened; a line joins the same zone's repeat inspections. A "
+           "required check left blank ('Not recorded') counts as not passed.")
+        st.caption("Zones with no required safety checks (bin-quality only) don't "
+                   "appear. Today most zones have a single inspection (a lone point); "
                    "trends emerge as more inspections accumulate.")
 
 
