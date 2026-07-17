@@ -585,39 +585,6 @@ def page_bin_analysis():
                     help=f"Number of bin inspections where the '{chk}' check was marked "
                          "Fail. The % below = that number ÷ total bin inspections in range.")
 
-    st.markdown("---")
-    st.subheader("Zone failure rate — failed / inspected")
-    rng = date_range("ba_zonerate")
-    bins = clip(FULL["bins"], rng)
-    if bins.empty:
-        _empty_note(rng)
-    else:
-        bz = bins.groupby("zone").agg(insp=("bin", "size"),
-                                      fails=("passed_all", lambda s: int((~s).sum()))).reset_index()
-        bz["rate"] = 100 * bz["fails"] / bz["insp"]
-        bz["failure_label"] = bz.apply(
-            lambda r: f"{int(r['fails'])}/{int(r['insp'])} failed", axis=1)
-        bz = bz.sort_values("rate", ascending=False)
-        fig = px.bar(bz, x="zone", y="rate", text="failure_label",
-                     hover_data={
-                         "insp": True,
-                         "fails": True,
-                         "rate": ":.1f",
-                         "failure_label": False,
-                     },
-                     color="rate", color_continuous_scale=[PASS, WARN, FAIL])
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_layout(coloraxis_showscale=False, xaxis_title="",
-                          yaxis_title="% failed bin inspections", height=360,
-                          margin=dict(t=10))
-        fig.update_yaxes(range=[0, 110], ticksuffix="%")
-        st.plotly_chart(fig, width="stretch")
-        fx("one bar per zone. Height = 100 × failed bin inspections ÷ all bin "
-           f"inspections in that zone; a failed bin inspection means at least one of "
-           f"the four checks failed ({FOUR_CHECKS}). Bar text = failed inspections / "
-           "total inspections, so small sample sizes are visible. Colour (green→red) "
-           "tracks the same rate.")
-
     # ---- Zone safety checks (select a zone -> stacked status bar + ledger)
     st.markdown("---")
     st.subheader("Zone safety checks — status by check type")
