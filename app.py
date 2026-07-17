@@ -303,22 +303,42 @@ def page_overview():
 
     st.markdown("---")
     # ---- Timeline
-    st.subheader("Inspection timeline — defects found per report")
+    st.subheader("Inspection timeline — all reports and defects")
     rng = date_range("ov_timeline")
-    fl = clip(FULL["failed_long"], rng)
-    if fl.empty:
+    bins = clip(FULL["bins"], rng)
+    if bins.empty:
         _empty_note(rng)
     else:
-        per_report = (fl.groupby(["fi_reportid", "date", "zone"]).size()
-                      .reset_index(name="defects").sort_values("date"))
-        fig = px.scatter(per_report, x="date", y="defects", size="defects",
-                         color="zone", hover_data=["fi_reportid"])
+        per_report = (bins.groupby(["fi_reportid", "date", "zone"])
+                      .agg(defects=("n_fail", "sum"),
+                           bins_inspected=("bin", "size"),
+                           failed_bins=("passed_all", lambda s: int((~s).sum())))
+                      .reset_index()
+                      .sort_values("date"))
+        per_report["inspection_result"] = per_report["defects"].map(
+            lambda n: "No defects" if n == 0 else "Defects found")
+        per_report["marker_size"] = per_report["defects"].clip(lower=1)
+        fig = px.scatter(
+            per_report, x="date", y="defects", size="marker_size",
+            color="zone", symbol="inspection_result",
+            hover_data={
+                "fi_reportid": True,
+                "bins_inspected": True,
+                "failed_bins": True,
+                "defects": True,
+                "marker_size": False,
+                "inspection_result": True,
+            },
+            size_max=18,
+        )
         fig.update_layout(height=320, xaxis_title="", yaxis_title="Defects in report",
-                          margin=dict(t=10, b=0))
+                          legend_title="", margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
-        fx("one marker per inspection report. x = when the inspection happened (the "
-           "timestamp encoded in its report id). y and bubble size = number of failed "
-           f"bin checks ({FOUR_CHECKS}) found in that report. Colour = zone.")
+        fx("one marker per bin-inspection report from the bin-inspection table. "
+           "y = total failed bin checks in that report; 0 means the inspection had no "
+           "bin defects. Marker size grows with the defect count, with zero-defect "
+           "reports given a minimum visible marker. Colour = zone; symbol = defects "
+           "found vs no defects.")
 
     st.markdown("---")
     # ---- Pass rate trend by zone, filterable to a single check
