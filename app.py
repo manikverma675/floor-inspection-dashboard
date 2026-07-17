@@ -539,26 +539,6 @@ def page_bin_analysis():
            f"at least one of the four checks ({FOUR_CHECKS}) ÷ all bin inspections in "
            "the zone). Colour (green→red) tracks the same rate.")
 
-    st.markdown("---")
-    st.subheader("Zone × Check heatmap (defect counts)")
-    rng = date_range("ba_heatmap")
-    fl = clip(FULL["failed_long"], rng)
-    if fl.empty:
-        _empty_note(rng)
-    else:
-        pivot = (fl.groupby(["zone", "check"]).size().reset_index(name="n")
-                 .pivot(index="zone", columns="check", values="n").fillna(0))
-        pivot = pivot.reindex(columns=[c for c in BIN_LABELS if c in pivot.columns])
-        pivot = pivot.reindex(sorted(pivot.index, key=dl.zone_sort_key))
-        fig = go.Figure(go.Heatmap(z=pivot.values, x=pivot.columns, y=pivot.index,
-                                   colorscale="OrRd", text=pivot.values.astype(int),
-                                   texttemplate="%{text}", showscale=True))
-        fig.update_layout(height=430, margin=dict(t=10), xaxis_title="", yaxis_title="")
-        st.plotly_chart(fig, width="stretch")
-        fx(f"rows = zones, columns = the four checks ({FOUR_CHECKS}). Each cell = number "
-           "of bin inspections in that zone where that check failed; darker = more. "
-           "0 (blank) means no failures of that check in that zone.")
-
     # ---- Zone safety checks (select a zone -> stacked status bar + ledger)
     st.markdown("---")
     st.subheader("Zone safety checks — status by check type")

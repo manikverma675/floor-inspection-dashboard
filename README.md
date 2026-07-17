@@ -9,8 +9,7 @@ data exported from a Microsoft Dataverse / Power Apps inspection app.
   timeline, bin pass-rate by zone, and a per-bin failure breakdown with an
   inspector-notes ledger.
 - **Bin Failure Analysis** — per-check defect counts, failure rate by zone,
-  a zone × check heatmap, and a per-zone safety-check view (stacked status bar
-  + notes ledger).
+  and a per-zone safety-check view (stacked status bar + notes ledger).
 - **Repeat Offenders** — bins that failed on more than one inspection.
 - **Data Quality** — checklist completeness vs the config's required checks,
   a required-check status grid by zone, and known data-quality notes.
