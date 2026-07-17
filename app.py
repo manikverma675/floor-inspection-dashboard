@@ -303,42 +303,88 @@ def page_overview():
 
     st.markdown("---")
     # ---- Timeline
-    st.subheader("Inspection timeline — all reports and defects")
+    st.subheader("Inspection timeline — all reports and failures")
     rng = date_range("ov_timeline")
     bins = clip(FULL["bins"], rng)
-    if bins.empty:
+    safety = clip(FULL["safety"], rng)
+    reports = clip(FULL["reports"], rng)
+    required = FULL["required"].set_index("Zone")
+
+    report_sources = []
+    if not reports.empty:
+        report_sources.append(reports[["fi_reportid", "date", "zone"]].assign(_rank=0))
+    if not bins.empty:
+        report_sources.append(bins[["fi_reportid", "date", "zone"]].assign(_rank=1))
+    if not safety.empty:
+        report_sources.append(safety[["fi_reportid", "date", "zone"]].assign(_rank=2))
+
+    if not report_sources:
         _empty_note(rng)
     else:
-        per_report = (bins.groupby(["fi_reportid", "date", "zone"])
-                      .agg(defects=("n_fail", "sum"),
+        per_report = (pd.concat(report_sources, ignore_index=True)
+                      .dropna(subset=["date"])
+                      .sort_values("_rank")
+                      .drop_duplicates("fi_reportid")
+                      .drop(columns="_rank"))
+
+        bin_counts = (bins.groupby("fi_reportid")
+                      .agg(bin_failures=("n_fail", "sum"),
                            bins_inspected=("bin", "size"),
                            failed_bins=("passed_all", lambda s: int((~s).sum())))
                       .reset_index()
-                      .sort_values("date"))
-        per_report["inspection_result"] = per_report["defects"].map(
-            lambda n: "No defects" if n == 0 else "Defects found")
-        per_report["marker_size"] = per_report["defects"].clip(lower=1)
+                      if not bins.empty else
+                      pd.DataFrame(columns=[
+                          "fi_reportid", "bin_failures", "bins_inspected", "failed_bins"
+                      ]))
+
+        safety_req = safety[safety["check"].isin(dl.SAFETY_CHECKS)].copy()
+        if len(safety_req):
+            safety_req = safety_req[[(z in required.index and bool(required.loc[z, c]))
+                                     for z, c in zip(safety_req["zone"], safety_req["check"])]]
+        zone_counts = (safety_req.groupby("fi_reportid")
+                       .agg(zone_failures=("status", lambda s: int((s == "Fail").sum())))
+                       .reset_index()
+                       if not safety_req.empty else
+                       pd.DataFrame(columns=["fi_reportid", "zone_failures"]))
+
+        per_report = (per_report.merge(bin_counts, on="fi_reportid", how="left")
+                      .merge(zone_counts, on="fi_reportid", how="left")
+                      .fillna({
+                          "bin_failures": 0,
+                          "bins_inspected": 0,
+                          "failed_bins": 0,
+                          "zone_failures": 0,
+                      }))
+        for col in ["bin_failures", "bins_inspected", "failed_bins", "zone_failures"]:
+            per_report[col] = per_report[col].astype(int)
+        per_report["failures"] = per_report["bin_failures"] + per_report["zone_failures"]
+        per_report = per_report.sort_values("date")
+        per_report["inspection_result"] = per_report["failures"].map(
+            lambda n: "No failures" if n == 0 else "Failures found")
+        per_report["marker_size"] = per_report["failures"].clip(lower=1)
         fig = px.scatter(
-            per_report, x="date", y="defects", size="marker_size",
+            per_report, x="date", y="failures", size="marker_size",
             color="zone", symbol="inspection_result",
             hover_data={
                 "fi_reportid": True,
                 "bins_inspected": True,
                 "failed_bins": True,
-                "defects": True,
+                "bin_failures": True,
+                "zone_failures": True,
+                "failures": True,
                 "marker_size": False,
                 "inspection_result": True,
             },
             size_max=18,
         )
-        fig.update_layout(height=320, xaxis_title="", yaxis_title="Defects in report",
+        fig.update_layout(height=320, xaxis_title="", yaxis_title="Failures in report",
                           legend_title="", margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
-        fx("one marker per bin-inspection report from the bin-inspection table. "
-           "y = total failed bin checks in that report; 0 means the inspection had no "
-           "bin defects. Marker size grows with the defect count, with zero-defect "
-           "reports given a minimum visible marker. Colour = zone; symbol = defects "
-           "found vs no defects.")
+        fx("one marker per inspection report. y = bin-level failed checks plus required "
+           "zone-level safety checks marked Fail in that report. 0 means no bin or "
+           "required zone-level failures. Marker size grows with the failure count, with "
+           "zero-failure reports given a minimum visible marker. Colour = zone; symbol = "
+           "failures found vs no failures.")
 
     st.markdown("---")
     # ---- Pass rate trend by zone, filterable to a single check
