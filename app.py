@@ -205,186 +205,44 @@ def page_overview():
     # ---- KPI block
     st.subheader("Key metrics")
     rng = date_range("ov_kpi")
-    reps = clip(FULL["reports"], rng)
     bins = clip(FULL["bins"], rng)
-    failed = clip(FULL["failed_long"], rng)
     safety = clip(FULL["safety"], rng)
 
-    c = st.columns(4)
-    c[0].metric("Inspection reports", reps["fi_reportid"].nunique(),
-                help="Number of distinct inspection reports in the selected dates. "
-                     "One report = one zone inspected on one occasion (counted by its "
-                     "unique report id, fi_reportid).")
-    c[1].metric("Zones covered", reps["zone"].nunique(),
-                help="Number of distinct zones (e.g. Zone 1…Zone 13) that were "
-                     "inspected in the selected dates.")
-    c[2].metric("Bins inspected", f"{len(bins):,}",
-                help="Total bin inspections = number of individual bins checked, counted "
-                     "once per inspection. A bin checked on 2 days counts as 2.")
-    c[3].metric("Bin pass rate",
+    c = st.columns(2)
+    c[0].metric("Bin pass rate",
                 f"{100*bins['passed_all'].mean():.1f}%" if len(bins) else "—",
                 help=f"100 × (bin inspections that passed ALL four checks — {FOUR_CHECKS} "
                      "— ÷ total bin inspections).")
-    c = st.columns(4)
-    c[0].metric("Bin-level defects", len(failed),
-                help=f"Total number of failed checks across every bin. Each bin can "
-                     f"contribute up to 4 (one per check: {FOUR_CHECKS}).")
-    c[1].metric("Bins with ≥1 fail", int((~bins["passed_all"]).sum()) if len(bins) else 0,
-                help=f"Number of bin inspections that failed at least one of the four "
-                     f"checks ({FOUR_CHECKS}).")
-    c[2].metric("Safety-check fails", int((safety["status"] == "Fail").sum()) if len(safety) else 0,
-                help="Number of zone-level safety checks (e.g. Electrical Safety, Fire "
-                     "Extinguisher, Emergency Lighting) marked Fail. Not the bin checks.")
-    c[3].metric("Reports marked Fail", int((reps["result"] == "Fail").sum()) if len(reps) else 0,
-                help="Number of inspection reports whose overall result was recorded as "
-                     "Fail (the inspector's verdict for the whole zone visit).")
+    c[1].metric("Safety-check fail rate",
+                f"{100*(safety['status'] == 'Fail').mean():.1f}%" if len(safety) else "—",
+                help="100 × (zone-level safety checks marked Fail ÷ total safety checks). "
+                     "Safety checks are e.g. Electrical Safety, Fire Extinguisher, "
+                     "Emergency Lighting — not the bin checks.")
 
     st.markdown("---")
-    left, right = st.columns([3, 2])
-
     # ---- Defects by zone & check
-    with left:
-        st.subheader("Where failures happen — defects by zone & check")
-        rng = date_range("ov_zonecheck")
-        fl = clip(FULL["failed_long"], rng)
-        bn = clip(FULL["bins"], rng)
-        if fl.empty:
-            _empty_note(rng)
-        else:
-            g = fl.groupby(["zone", "check"]).size().reset_index(name="fails")
-            all_zones = sorted(bn["zone"].unique(), key=dl.zone_sort_key)
-            order = fl.groupby("zone").size().sort_values(ascending=False).index.tolist()
-            order += [z for z in all_zones if z not in order]
-            fig = px.bar(g, x="zone", y="fails", color="check",
-                         category_orders={"zone": order, "check": BIN_LABELS},
-                         color_discrete_map=CHECK_COLORS)
-            fig.update_xaxes(categoryorder="array", categoryarray=order, type="category")
-            fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Failed checks",
-                              legend_title="Check", height=430, margin=dict(t=10, b=0))
-            st.plotly_chart(fig, width="stretch")
-            fx("total bar height = number of failed checks in that zone. Each coloured "
-               f"segment = how many of those were a given check ({FOUR_CHECKS}). "
-               "Counted as: number of bin-inspection rows in the zone whose check = Fail. "
-               "Zones inspected but with no failures show an empty (zero-height) bar.")
-
-    with right:
-        # ---- Defects by check type
-        st.subheader("Bin defects by check type")
-        rng = date_range("ov_checktype")
-        fl = clip(FULL["failed_long"], rng)
-        counts = (fl["check"].value_counts().reindex(BIN_LABELS).fillna(0)
-                  if not fl.empty else pd.Series(0, index=BIN_LABELS))
-        cdf = counts.reset_index(); cdf.columns = ["check", "fails"]
-        fig = px.bar(cdf, x="fails", y="check", orientation="h",
-                     color="check", color_discrete_map=CHECK_COLORS)
-        fig.update_layout(showlegend=False, yaxis_title="", xaxis_title="Failed checks",
-                          height=250, margin=dict(t=10, b=0))
-        fig.update_yaxes(categoryorder="total ascending")
-        st.plotly_chart(fig, width="stretch")
-        fx(f"one bar per check ({FOUR_CHECKS}). Bar length = number of bin inspections, "
-           "across all zones, where that particular check was marked Fail.")
-
-        # ---- Report outcomes
-        st.subheader("Report outcomes")
-        rng = date_range("ov_outcomes")
-        reps = clip(FULL["reports"], rng)
-        if reps.empty:
-            _empty_note(rng)
-        else:
-            rc = reps["result"].replace("", "—").value_counts().reset_index()
-            rc.columns = ["result", "n"]
-            fig = px.pie(rc, names="result", values="n", hole=0.55, color="result",
-                         color_discrete_map={"Pass": PASS, "Fail": FAIL, "—": MUTED})
-            fig.update_layout(height=250, margin=dict(t=10, b=0))
-            st.plotly_chart(fig, width="stretch")
-            fx("each slice = number of inspection reports with that overall result "
-               "(Pass / Fail) ÷ total number of reports in range. The result is the "
-               "inspector's overall verdict per report, not the bin checks.")
-
-    st.markdown("---")
-    # ---- Timeline
-    st.subheader("Inspection timeline — all reports and failures")
-    rng = date_range("ov_timeline")
-    bins = clip(FULL["bins"], rng)
-    safety = clip(FULL["safety"], rng)
-    reports = clip(FULL["reports"], rng)
-    required = FULL["required"].set_index("Zone")
-
-    report_sources = []
-    if not reports.empty:
-        report_sources.append(reports[["fi_reportid", "date", "zone"]].assign(_rank=0))
-    if not bins.empty:
-        report_sources.append(bins[["fi_reportid", "date", "zone"]].assign(_rank=1))
-    if not safety.empty:
-        report_sources.append(safety[["fi_reportid", "date", "zone"]].assign(_rank=2))
-
-    if not report_sources:
+    st.subheader("Where failures happen — defects by zone & check")
+    rng = date_range("ov_zonecheck")
+    fl = clip(FULL["failed_long"], rng)
+    bn = clip(FULL["bins"], rng)
+    if fl.empty:
         _empty_note(rng)
     else:
-        per_report = (pd.concat(report_sources, ignore_index=True)
-                      .dropna(subset=["date"])
-                      .sort_values("_rank")
-                      .drop_duplicates("fi_reportid")
-                      .drop(columns="_rank"))
-
-        bin_counts = (bins.groupby("fi_reportid")
-                      .agg(bin_failures=("n_fail", "sum"),
-                           bins_inspected=("bin", "size"),
-                           failed_bins=("passed_all", lambda s: int((~s).sum())))
-                      .reset_index()
-                      if not bins.empty else
-                      pd.DataFrame(columns=[
-                          "fi_reportid", "bin_failures", "bins_inspected", "failed_bins"
-                      ]))
-
-        safety_req = safety[safety["check"].isin(dl.SAFETY_CHECKS)].copy()
-        if len(safety_req):
-            safety_req = safety_req[[(z in required.index and bool(required.loc[z, c]))
-                                     for z, c in zip(safety_req["zone"], safety_req["check"])]]
-        zone_counts = (safety_req.groupby("fi_reportid")
-                       .agg(zone_failures=("status", lambda s: int((s == "Fail").sum())))
-                       .reset_index()
-                       if not safety_req.empty else
-                       pd.DataFrame(columns=["fi_reportid", "zone_failures"]))
-
-        per_report = (per_report.merge(bin_counts, on="fi_reportid", how="left")
-                      .merge(zone_counts, on="fi_reportid", how="left")
-                      .fillna({
-                          "bin_failures": 0,
-                          "bins_inspected": 0,
-                          "failed_bins": 0,
-                          "zone_failures": 0,
-                      }))
-        for col in ["bin_failures", "bins_inspected", "failed_bins", "zone_failures"]:
-            per_report[col] = per_report[col].astype(int)
-        per_report["failures"] = per_report["bin_failures"] + per_report["zone_failures"]
-        per_report = per_report.sort_values("date")
-        per_report["inspection_result"] = per_report["failures"].map(
-            lambda n: "No failures" if n == 0 else "Failures found")
-        per_report["marker_size"] = per_report["failures"].clip(lower=1)
-        fig = px.scatter(
-            per_report, x="date", y="failures", size="marker_size",
-            color="zone", symbol="inspection_result",
-            hover_data={
-                "fi_reportid": True,
-                "bins_inspected": True,
-                "failed_bins": True,
-                "bin_failures": True,
-                "zone_failures": True,
-                "failures": True,
-                "marker_size": False,
-                "inspection_result": True,
-            },
-            size_max=18,
-        )
-        fig.update_layout(height=320, xaxis_title="", yaxis_title="Failures in report",
-                          legend_title="", margin=dict(t=10, b=0))
+        g = fl.groupby(["zone", "check"]).size().reset_index(name="fails")
+        all_zones = sorted(bn["zone"].unique(), key=dl.zone_sort_key)
+        order = fl.groupby("zone").size().sort_values(ascending=False).index.tolist()
+        order += [z for z in all_zones if z not in order]
+        fig = px.bar(g, x="zone", y="fails", color="check",
+                     category_orders={"zone": order, "check": BIN_LABELS},
+                     color_discrete_map=CHECK_COLORS)
+        fig.update_xaxes(categoryorder="array", categoryarray=order, type="category")
+        fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Failed checks",
+                          legend_title="Check", height=430, margin=dict(t=10, b=0))
         st.plotly_chart(fig, width="stretch")
-        fx("one marker per inspection report. y = bin-level failed checks plus required "
-           "zone-level safety checks marked Fail in that report. 0 means no bin or "
-           "required zone-level failures. Marker size grows with the failure count, with "
-           "zero-failure reports given a minimum visible marker. Colour = zone; symbol = "
-           "failures found vs no failures.")
+        fx("total bar height = number of failed checks in that zone. Each coloured "
+           f"segment = how many of those were a given check ({FOUR_CHECKS}). "
+           "Counted as: number of bin-inspection rows in the zone whose check = Fail. "
+           "Zones inspected but with no failures show an empty (zero-height) bar.")
 
     st.markdown("---")
     # ---- Pass rate trend by zone, filterable to a single check
@@ -528,19 +386,6 @@ def page_overview():
         m[3].metric("Total failures", len(sel_fails),
                     help="Total failed checks for this bin, added up over all its "
                          "inspections (a single inspection can contribute up to 4).")
-        counts = (sel_fails["check"].value_counts().reindex(BIN_LABELS).fillna(0)
-                  if not sel_fails.empty else pd.Series(0, index=BIN_LABELS))
-        cdf = counts.reset_index(); cdf.columns = ["check", "failures"]
-        fig = px.bar(cdf, x="check", y="failures", color="check",
-                     category_orders={"check": BIN_LABELS},
-                     color_discrete_map=CHECK_COLORS, text="failures")
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_yaxes(dtick=1, rangemode="tozero")
-        fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Failures",
-                          height=360, margin=dict(t=10, b=0))
-        st.plotly_chart(fig, width="stretch")
-        fx(f"one bar per check ({FOUR_CHECKS}). Bar height = how many times THIS bin "
-           "failed that specific check, added up over all its inspections in range.")
         if sel_fails.empty:
             st.caption(f"{sel_bin} passed every check on all {len(sub)} inspection(s).")
 
