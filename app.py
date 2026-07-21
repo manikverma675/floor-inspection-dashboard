@@ -195,6 +195,62 @@ def fx(text: str):
     st.caption(f"**Formula:** {text}")
 
 
+def clicked_report_ids(event) -> list:
+    """Pull the fi_reportid (carried in custom_data[0]) from clicked chart points."""
+    try:
+        pts = event["selection"]["points"]
+    except (KeyError, TypeError, AttributeError):
+        pts = getattr(getattr(event, "selection", None), "points", []) or []
+    ids = []
+    for p in pts:
+        cd = p.get("customdata") or p.get("custom_data") if isinstance(p, dict) else None
+        if cd:
+            ids.append(cd[0])
+    return ids
+
+
+def failing_records_table(fl_subset, empty_msg: str):
+    """Render the failing-check ledger (with inspector notes) for failed_long rows."""
+    if fl_subset.empty:
+        st.caption(empty_msg)
+        return
+    # inspector's free-text explanation, recorded per inspection (master table)
+    notes_src = FULL["reports"]["issues"].where(
+        FULL["reports"]["issues"].str.strip() != "", FULL["reports"]["comments"])
+    notes_map = dict(zip(FULL["reports"]["fi_reportid"], notes_src))
+    led = fl_subset.sort_values("date").copy()
+    led["date"] = led["date"].dt.strftime("%Y-%m-%d %H:%M")
+    led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
+    st.dataframe(led[["date", "zone", "bin", "check", "inspector notes"]],
+                 width="stretch", hide_index=True)
+    fx("one row for each failed check in the clicked inspection(s). "
+       "'inspector notes' = the free-text explanation the inspector wrote for "
+       "that whole inspection (the report's observed-issues field, or the "
+       "comments field if that's blank), matched to the row by report id.")
+    st.caption("Inspector notes are recorded per inspection (whole-zone), "
+               "so they may describe issues beyond a single bin.")
+
+
+def safety_records_table(sdf_subset, empty_msg: str):
+    """Render the safety-check ledger (with inspector notes) for safety rows."""
+    if sdf_subset.empty:
+        st.caption(empty_msg)
+        return
+    notes_src = FULL["reports"]["issues"].where(
+        FULL["reports"]["issues"].str.strip() != "", FULL["reports"]["comments"])
+    notes_map = dict(zip(FULL["reports"]["fi_reportid"], notes_src))
+    led = sdf_subset.sort_values(["date", "check"]).copy()
+    led["date"] = led["date"].dt.strftime("%Y-%m-%d %H:%M")
+    led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
+    st.dataframe(led[["date", "zone", "check", "status", "inspector notes"]],
+                 width="stretch", hide_index=True)
+    fx("one row for each required safety check in the clicked inspection(s). "
+       "'status' is the recorded outcome of that check; 'inspector notes' = the "
+       "free-text explanation for that inspection (the report's observed-issues "
+       "field, or comments if blank), matched by report id.")
+    st.caption("Inspector notes are recorded per inspection (whole-zone).")
+
+
 # --------------------------------------------------------------------------- #
 # Page: Overview
 # --------------------------------------------------------------------------- #
@@ -249,6 +305,7 @@ def page_overview():
     st.subheader("Bin pass-rate trend by zone")
     rng = date_range("ov_passrate")
     bins = clip(FULL["bins"], rng)
+    fl = clip(FULL["failed_long"], rng)
     if bins.empty:
         _empty_note(rng)
     else:
@@ -279,9 +336,13 @@ def page_overview():
 
         work = zoned if not bin_multi else zoned[zoned["bin"].isin(bin_multi)]
 
+        picked_reports = []   # fi_reportids of markers the user clicked on the trend
+        picked_bin = None     # restrict the records table to this bin (single-bin view)
+
         if len(bin_multi) == 1:
             # -------- Single-bin drill-down (two views of the same data) --------
             bin_one = bin_multi[0]
+            picked_bin = bin_one
             one = work.copy()
             one["_pass"] = _pass_col(one)
             one = one.sort_values("date")
@@ -295,12 +356,15 @@ def page_overview():
             v1["result"] = v1["_pass"].map({True: 100, False: 0})
             v1["outcome"] = v1["_pass"].map({True: "Pass", False: "Fail"})
             fig1 = px.line(v1, x="date", y="result", markers=True,
+                           custom_data=["fi_reportid"],
                            hover_data={"outcome": True, "result": False, "date": False})
             fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
             fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
             fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
                                margin=dict(t=10, b=0))
-            st.plotly_chart(fig1, width="stretch")
+            ev = st.plotly_chart(fig1, width="stretch", on_select="rerun",
+                                 key="ov_trend_click_bin")
+            picked_reports = clicked_report_ids(ev)
             fx(f"one marker per inspection of {bin_one}: 100 = it passed {check_word} that "
                "day, 0 = it failed. The step line shows exactly which inspections failed.")
 
@@ -336,6 +400,7 @@ def page_overview():
             trend = trend.sort_values("date")
             fig = px.line(
                 trend, x="date", y="pass_rate", color="zone", markers=True,
+                custom_data=["fi_reportid"],
                 hover_data={"insp": True, "fails": True, "pass_rate": ":.1f",
                             "date": False, "zone": False},
                 category_orders={"zone": sorted(trend["zone"].unique(), key=dl.zone_sort_key)},
@@ -344,7 +409,9 @@ def page_overview():
             fig.update_layout(xaxis_title="", yaxis_title=f"% bins {label}",
                               yaxis_range=[0, 105], legend_title="Zone", height=440,
                               margin=dict(t=10, b=0))
-            st.plotly_chart(fig, width="stretch")
+            ev = st.plotly_chart(fig, width="stretch", on_select="rerun",
+                                 key="ov_trend_click_zone")
+            picked_reports = clicked_report_ids(ev)
             scope = "" if not bin_multi else f" (limited to {len(bin_multi)} selected bins)"
             fx(f"each point = a zone's pass rate in one inspection = 100 × (bins {label} "
                f"÷ bins inspected in that report{scope}). x = inspection date; a line "
@@ -353,62 +420,17 @@ def page_overview():
                        "inspections. Bins and Checks accept multiple selections — pick "
                        "exactly one Bin to drill into its pass/fail history.")
 
-    st.markdown("---")
-    # ---- Per-bin failure breakdown
-    st.subheader("Failures for a specific bin — by reason")
-    rng = date_range("ov_binpick")
-    bins = clip(FULL["bins"], rng)
-    fl = clip(FULL["failed_long"], rng)
-    bin_fail_totals = (fl.groupby("bin").size().sort_values(ascending=False)
-                       if not fl.empty else pd.Series(dtype=int))
-    failing_bins = bin_fail_totals.index.tolist()
-    other_bins = sorted(set(bins["bin"]) - set(failing_bins), key=str) if len(bins) else []
-    bin_options = failing_bins + other_bins
-    if not bin_options:
-        _empty_note(rng)
-    else:
-        sel_bin = st.selectbox(
-            "Bin Location", bin_options,
-            format_func=lambda b: f"{b}  —  {int(bin_fail_totals.get(b, 0))} failure(s)",
-            key="ov_binpick_sel")
-        sub = bins[bins["bin"] == sel_bin]
-        sel_fails = fl[fl["bin"] == sel_bin] if not fl.empty else fl
-        m = st.columns(4)
-        m[0].metric("Zone", sub["zone"].iloc[0] if not sub.empty else "—",
-                    help="The zone this bin belongs to, taken from the Zone Config "
-                         "workbook's authoritative bin→zone mapping.")
-        m[1].metric("Times inspected", len(sub),
-                    help="How many times this bin was inspected in the selected dates "
-                         "(one count per inspection report it appears in).")
-        m[2].metric("Inspections with a fail", int((~sub["passed_all"]).sum()),
-                    help=f"How many of this bin's inspections failed at least one of the "
-                         f"four checks ({FOUR_CHECKS}).")
-        m[3].metric("Total failures", len(sel_fails),
-                    help="Total failed checks for this bin, added up over all its "
-                         "inspections (a single inspection can contribute up to 4).")
-        if sel_fails.empty:
-            st.caption(f"{sel_bin} passed every check on all {len(sub)} inspection(s).")
-
-        # ---- Failing-check ledger for the SELECTED bin only (with inspector notes)
-        st.markdown(f"##### Failing-check records for {sel_bin}")
-        if sel_fails.empty:
-            st.caption("No failing-check records for this bin in the selected date range.")
+        # ---- Failing-check records for the clicked point on the trend above
+        st.markdown("##### Failing-check records — click a point on the trend above")
+        if not picked_reports:
+            st.caption("Click a marker on the trend chart to load that inspection's "
+                       "failing-check records here.")
         else:
-            # inspector's free-text explanation, recorded per inspection (master table)
-            notes_src = FULL["reports"]["issues"].where(
-                FULL["reports"]["issues"].str.strip() != "", FULL["reports"]["comments"])
-            notes_map = dict(zip(FULL["reports"]["fi_reportid"], notes_src))
-            led = sel_fails.sort_values("date").copy()
-            led["date"] = led["date"].dt.strftime("%Y-%m-%d %H:%M")
-            led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
-            st.dataframe(led[["date", "zone", "bin", "check", "inspector notes"]],
-                         width="stretch", hide_index=True)
-            fx("one row for each check this bin failed, on each date it was inspected. "
-               "'inspector notes' = the free-text explanation the inspector wrote for "
-               "that whole inspection (the report's observed-issues field, or the "
-               "comments field if that's blank), matched to the row by report id.")
-            st.caption("Inspector notes are recorded per inspection (whole-zone), "
-                       "so they may describe issues beyond this single bin.")
+            picked = fl[fl["fi_reportid"].isin(picked_reports)] if not fl.empty else fl
+            if picked_bin is not None:
+                picked = picked[picked["bin"] == picked_bin]
+            failing_records_table(
+                picked, "The clicked inspection(s) recorded no failing checks.")
 
 
 # --------------------------------------------------------------------------- #
@@ -417,80 +439,9 @@ def page_overview():
 def page_bin_analysis():
     st.title("Bin Failure Analysis")
 
-    # ---- Per-check KPIs
-    st.subheader("Defect counts by check")
-    rng = date_range("ba_kpi")
-    fl = clip(FULL["failed_long"], rng)
-    bins = clip(FULL["bins"], rng)
-    total = max(len(bins), 1)
-    c = st.columns(4)
-    for i, chk in enumerate(BIN_LABELS):
-        n = int((fl["check"] == chk).sum()) if len(fl) else 0
-        c[i].metric(chk, n, f"{100*n/total:.1f}% of inspections",
-                    help=f"Number of bin inspections where the '{chk}' check was marked "
-                         "Fail. The % below = that number ÷ total bin inspections in range.")
-
-    # ---- Zone safety checks (select a zone -> stacked status bar + ledger)
-    st.markdown("---")
-    st.subheader("Zone safety checks — status by check type")
-    st.caption("Select a zone to see its required safety checks (Emergency Lighting, "
-               "Fire Extinguisher, Dock Security, Electrical, Moisture, Eyewash, 5S).")
-    zones = zone_options(FULL["zone_to_bins"].keys())
-    sel_zone = st.selectbox("Zone", zones, key="ba_safety_zone")
-    rng = date_range("ba_safetyzone")
-
     required = FULL["required"].set_index("Zone")
-    req_checks = [c for c in dl.SAFETY_CHECKS
-                  if sel_zone in required.index and bool(required.loc[sel_zone, c])]
-    reps_z = clip(FULL["reports"], rng)
-    safety_z = clip(FULL["safety"], rng)
-    zrep = reps_z.loc[reps_z["zone"] == sel_zone, "fi_reportid"].tolist() if len(reps_z) else []
-    sdf = (safety_z[(safety_z["fi_reportid"].isin(zrep)) & (safety_z["check"].isin(req_checks))]
-           if len(safety_z) else safety_z)
 
-    if not req_checks:
-        st.info(f"{sel_zone} has no zone-level safety checks required in the config "
-                "(it is bin-quality only).")
-    elif sdf.empty:
-        _empty_note(rng)
-    else:
-        order = ["Pass", "Fail", "Recorded", "Not recorded"]
-        g = sdf.groupby(["check", "status"]).size().reset_index(name="n")
-        g["check"] = g["check"].map(SHORT_CHECK).fillna(g["check"])
-        cat = [SHORT_CHECK.get(c, c) for c in req_checks]
-        fig = px.bar(g, x="check", y="n", color="status",
-                     category_orders={"status": order, "check": cat},
-                     color_discrete_map=STATUS_COLORS)
-        fig.update_layout(barmode="stack", xaxis_title="", yaxis_title="Inspections",
-                          legend_title="Status", height=400, margin=dict(t=10),
-                          xaxis_tickangle=-15)
-        st.plotly_chart(fig, width="stretch")
-        fx("one bar per safety check this zone must do (from the Zone Config Y/N "
-           "matrix — e.g. Electrical, Fire Extinguisher, Emergency Lighting, Dock, "
-           "Moisture, Eyewash, 5S). Bar height = number of this zone's inspections; "
-           "coloured segments split that by outcome (Pass / Fail / Recorded / Not "
-           "recorded). 'Not recorded' = the check was required but left blank.")
-        st.caption("Only the checks this zone is required to perform (per Zone Config) "
-                   "are shown. 'Not recorded' = required but left blank in that inspection.")
-
-        # ledger with inspector notes
-        st.markdown(f"##### Safety-check records for {sel_zone}")
-        notes_src = FULL["reports"]["issues"].where(
-            FULL["reports"]["issues"].str.strip() != "", FULL["reports"]["comments"])
-        notes_map = dict(zip(FULL["reports"]["fi_reportid"], notes_src))
-        led = sdf.sort_values(["date", "check"]).copy()
-        led["date"] = led["date"].dt.strftime("%Y-%m-%d %H:%M")
-        led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
-        st.dataframe(led[["date", "zone", "check", "status", "inspector notes"]],
-                     width="stretch", hide_index=True)
-        fx("one row for each required safety check, on each date the zone was "
-           "inspected. 'status' is the recorded outcome of that check; 'inspector "
-           "notes' = the free-text explanation for that inspection (the report's "
-           "observed-issues field, or comments if blank), matched by report id.")
-        st.caption("Inspector notes are recorded per inspection (whole-zone).")
-
-    # ---- Zone safety-check pass-rate trend (mirrors the bin pass-rate trend)
-    st.markdown("---")
+    # ---- Zone safety-check pass-rate trend (click a point to filter the records)
     st.subheader("Zone safety-check pass-rate trend")
     st.caption("Pass rate = % of a zone's required safety checks (Electrical Safety, "
                "Fire Extinguisher, Emergency Lighting, Dock Security, Moisture Control, "
@@ -517,6 +468,7 @@ def page_bin_analysis():
         work = sdf_t if not zsel else sdf_t[sdf_t["zone"].isin(zsel)]
         if chk_multi:
             work = work[work["check"].isin(chk_multi)]
+        picked_reports = []   # fi_reportids of markers the user clicked on the trend
         if work.empty:
             _empty_note(rng)
         elif len(zsel) == 1 and len(chk_multi) == 1:
@@ -532,12 +484,15 @@ def page_bin_analysis():
             v1 = s1.copy()
             v1["result"] = v1["_pass"].map({True: 100, False: 0})
             fig1 = px.line(v1, x="date", y="result", markers=True,
+                           custom_data=["fi_reportid"],
                            hover_data={"status": True, "result": False, "date": False})
             fig1.update_traces(marker=dict(size=11), line=dict(shape="hv", color=MUTED))
             fig1.update_yaxes(range=[-8, 108], tickvals=[0, 100], ticktext=["Fail", "Pass"])
             fig1.update_layout(xaxis_title="", yaxis_title="", height=300,
                                margin=dict(t=10, b=0))
-            st.plotly_chart(fig1, width="stretch")
+            ev = st.plotly_chart(fig1, width="stretch", on_select="rerun",
+                                 key="ba_trend_click_single")
+            picked_reports = clicked_report_ids(ev)
             fx(f"one marker per inspection of {zone_one}: 100 = '{chk_s}' passed that "
                "inspection, 0 = it failed or was not recorded. The step line shows "
                "exactly which inspections failed.")
@@ -572,6 +527,7 @@ def page_bin_analysis():
             grp = grp.sort_values("date")
             fig = px.line(
                 grp, x="date", y="pass_rate", color="zone", markers=True,
+                custom_data=["fi_reportid"],
                 hover_data={"passed": True, "required": True, "pass_rate": ":.1f",
                             "date": False, "zone": False},
                 category_orders={"zone": zones_avail},
@@ -581,7 +537,9 @@ def page_bin_analysis():
                       else "Safety pass rate (%)")
             fig.update_layout(xaxis_title="", yaxis_title=ytitle, yaxis_range=[0, 105],
                               legend_title="Zone", height=440, margin=dict(t=10, b=0))
-            st.plotly_chart(fig, width="stretch")
+            ev = st.plotly_chart(fig, width="stretch", on_select="rerun",
+                                 key="ba_trend_click_compare")
+            picked_reports = clicked_report_ids(ev)
             scope = ("all required safety checks" if not chk_multi
                      else ", ".join(chk_multi))
             fx(f"each point = 100 × (selected safety checks marked Pass ÷ selected "
@@ -591,6 +549,17 @@ def page_bin_analysis():
             st.caption("Only zones that require the selected checks appear. Safety "
                        "checks accept multiple selections — select a single zone AND a "
                        "single safety check to drill into its per-inspection history.")
+
+        # ---- Safety-check records for the clicked point on the trend above
+        if not work.empty:
+            st.markdown("##### Safety-check records — click a point on the trend above")
+            if not picked_reports:
+                st.caption("Click a marker on the trend chart to load that "
+                           "inspection's safety-check records here.")
+            else:
+                picked = work[work["fi_reportid"].isin(picked_reports)]
+                safety_records_table(
+                    picked, "The clicked inspection(s) recorded no safety checks.")
 
 
 # --------------------------------------------------------------------------- #
