@@ -209,24 +209,31 @@ def clicked_report_ids(event) -> list:
     return ids
 
 
-def failing_records_table(fl_subset, empty_msg: str):
-    """Render the failing-check ledger (with inspector notes) for failed_long rows."""
-    if fl_subset.empty:
+def bin_check_records_table(bins_subset, empty_msg: str):
+    """Render every check (Pass/Fail) for the given bin inspections, with notes."""
+    if bins_subset.empty:
         st.caption(empty_msg)
         return
     # inspector's free-text explanation, recorded per inspection (master table)
     notes_src = FULL["reports"]["issues"].where(
         FULL["reports"]["issues"].str.strip() != "", FULL["reports"]["comments"])
     notes_map = dict(zip(FULL["reports"]["fi_reportid"], notes_src))
-    led = fl_subset.sort_values("date").copy()
-    led["date"] = led["date"].dt.strftime("%Y-%m-%d %H:%M")
-    led["inspector notes"] = led["fi_reportid"].map(notes_map).fillna("")
-    st.dataframe(led[["date", "zone", "bin", "check", "inspector notes"]],
+    # one row per (bin inspection, check) with that check's recorded status
+    long = bins_subset.melt(
+        id_vars=["date", "zone", "bin", "fi_reportid"], value_vars=BIN_LABELS,
+        var_name="check", value_name="status")
+    long["status"] = long["status"].replace("", "—")
+    long["check"] = pd.Categorical(long["check"], categories=BIN_LABELS, ordered=True)
+    long = long.sort_values(["date", "bin", "check"])
+    long["inspector notes"] = long["fi_reportid"].map(notes_map).fillna("")
+    long["date"] = long["date"].dt.strftime("%Y-%m-%d %H:%M")
+    st.dataframe(long[["date", "zone", "bin", "check", "status", "inspector notes"]],
                  width="stretch", hide_index=True)
-    fx("one row for each failed check in the clicked inspection(s). "
-       "'inspector notes' = the free-text explanation the inspector wrote for "
-       "that whole inspection (the report's observed-issues field, or the "
-       "comments field if that's blank), matched to the row by report id.")
+    fx("one row per bin check in the clicked inspection(s) — all four checks "
+       f"({FOUR_CHECKS}) are listed with their recorded 'status' (Pass / Fail, "
+       "or — if left blank). 'inspector notes' = the free-text explanation the "
+       "inspector wrote for that whole inspection (the report's observed-issues "
+       "field, or the comments field if that's blank), matched by report id.")
     st.caption("Inspector notes are recorded per inspection (whole-zone), "
                "so they may describe issues beyond a single bin.")
 
@@ -305,7 +312,6 @@ def page_overview():
     st.subheader("Bin pass-rate trend by zone")
     rng = date_range("ov_passrate")
     bins = clip(FULL["bins"], rng)
-    fl = clip(FULL["failed_long"], rng)
     if bins.empty:
         _empty_note(rng)
     else:
@@ -420,17 +426,17 @@ def page_overview():
                        "inspections. Bins and Checks accept multiple selections — pick "
                        "exactly one Bin to drill into its pass/fail history.")
 
-        # ---- Failing-check records for the clicked point on the trend above
-        st.markdown("##### Failing-check records — click a point on the trend above")
+        # ---- Bin-check records for the clicked point on the trend above
+        st.markdown("##### Bin-check records — click a point on the trend above")
         if not picked_reports:
             st.caption("Click a marker on the trend chart to load that inspection's "
-                       "failing-check records here.")
+                       "per-check Pass/Fail records here.")
         else:
-            picked = fl[fl["fi_reportid"].isin(picked_reports)] if not fl.empty else fl
+            picked = bins[bins["fi_reportid"].isin(picked_reports)] if not bins.empty else bins
             if picked_bin is not None:
                 picked = picked[picked["bin"] == picked_bin]
-            failing_records_table(
-                picked, "The clicked inspection(s) recorded no failing checks.")
+            bin_check_records_table(
+                picked, "The clicked inspection(s) recorded no bin checks.")
 
 
 # --------------------------------------------------------------------------- #
